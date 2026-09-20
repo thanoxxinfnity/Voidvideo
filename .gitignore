@@ -1,0 +1,51 @@
+# --- Secrets ---
+.env
+kaggle.json
+.kaggle/
+*.pem
+*.key
+
+# --- Python ---
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+
+# --- Data (large binaries, never commit) ---
+data/raw_clips/*
+!data/raw_clips/.gitkeep
+data/processed/*
+!data/processed/.gitkeep
+data/captions/*
+!data/captions/.gitkeep
+
+# --- Model weights / checkpoints ---
+models/*
+!models/.gitkeep
+outputs/*
+!outputs/.gitkeep
+*.safetensors
+*.ckpt
+*.pt
+*.bin
+
+# --- Generated media ---
+*.mp4
+*.gif
+!docs/**/*.mp4
+!docs/**/*.gif
+
+# --- Kaggle push staging ---
+kaggle_dataset_staging/
+kaggle_kernel_staging/
+
+# --- Editors / OS ---
+.vscode/
+.idea/
+.DS_Store
+
+# --- Jupyter ---
+.ipynb_checkpoints/

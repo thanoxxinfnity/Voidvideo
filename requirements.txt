@@ -1,0 +1,30 @@
+# Core ML
+torch>=2.2.0
+torchvision>=0.17.0
+diffusers>=0.30.0
+transformers>=4.44.0
+accelerate>=0.33.0
+peft>=0.12.0
+safetensors>=0.4.3
+sentencepiece
+
+# Video I/O
+decord>=0.6.0
+imageio>=2.34.0
+imageio-ffmpeg>=0.5.1
+opencv-python-headless>=4.10.0
+
+# Optional: memory-efficient optimizers for LoRA training on limited VRAM (Kaggle T4/P100)
+bitsandbytes>=0.43.0
+
+# Auto-captioning (optional, used by prepare_dataset.py if no captions supplied)
+# transformers already covers BLIP-2; kept explicit for clarity
+
+# Kaggle pipeline
+kaggle>=1.6.17
+python-dotenv>=1.0.1
+pyyaml>=6.0.1
+tqdm>=4.66.0
+
+# Gradio UI
+gradio>=4.44.0

@@ -1,0 +1,56 @@
+# VoidVideo LoRA training configuration
+# Two independent tasks are supported because CogVideoX ships separate T2V and I2V
+# checkpoints with different architectures. Train the one(s) you need.
+
+t2v:
+  base_model_id: "THUDM/CogVideoX-2b"
+  output_dir: "outputs/lora_t2v"
+  num_frames: 49          # CogVideoX-2B native window (~6s @ 8fps)
+  fps: 8
+  height: 480
+  width: 720
+  lora_rank: 64
+  lora_alpha: 64
+  lora_target_modules: ["to_q", "to_k", "to_v", "to_out.0"]
+  learning_rate: 1.0e-4
+  lr_scheduler: "cosine"
+  lr_warmup_steps: 100
+  max_train_steps: 3000
+  train_batch_size: 1
+  gradient_accumulation_steps: 4
+  gradient_checkpointing: true
+  mixed_precision: "bf16"   # "fp16" if your GPU lacks bf16 support (e.g. older T4 setups)
+  use_8bit_adam: true
+  checkpointing_steps: 250
+  validation_steps: 250
+  validation_prompt: "a hand-drawn anime girl walking through a rain-soaked street at night, traditional 2D animation, natural line-art, smooth timing"
+  seed: 42
+
+i2v:
+  base_model_id: "THUDM/CogVideoX-5b-I2V"
+  output_dir: "outputs/lora_i2v"
+  num_frames: 49
+  fps: 8
+  height: 480
+  width: 720
+  lora_rank: 64
+  lora_alpha: 64
+  lora_target_modules: ["to_q", "to_k", "to_v", "to_out.0"]
+  learning_rate: 1.0e-4
+  lr_scheduler: "cosine"
+  lr_warmup_steps: 100
+  max_train_steps: 3000
+  train_batch_size: 1
+  gradient_accumulation_steps: 4
+  gradient_checkpointing: true
+  mixed_precision: "bf16"
+  use_8bit_adam: true
+  checkpointing_steps: 250
+  validation_steps: 250
+  validation_prompt: "a hand-drawn anime girl walking through a rain-soaked street at night, traditional 2D animation, natural line-art, smooth timing"
+  seed: 42
+
+dataset:
+  metadata_file: "data/processed/metadata.jsonl"
+  video_root: "data/processed/clips"
+  caption_dropout: 0.1   # fraction of steps trained with empty caption, improves classifier-free guidance quality
