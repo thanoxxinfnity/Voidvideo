@@ -221,28 +221,37 @@ print("Model loaded. Launching Gradio...", flush=True)
 
 def generate(prompt_text, steps, seed):
     if not prompt_text or not prompt_text.strip():
-        raise gr.Error("Prompt khali hai -- kuch likho ya dropdown se pick karo.")
+        return None, "ERROR: Prompt khali hai -- kuch likho ya dropdown se pick karo."
 
     full_prompt = prompt_text.strip() + STYLE_SUFFIX
     seed = int(seed) if seed is not None and seed >= 0 else torch.randint(0, 2**31 - 1, (1,)).item()
-    generator = torch.Generator(device="cuda").manual_seed(seed)
 
-    frames = pipe(
-        prompt=full_prompt,
-        negative_prompt=NEGATIVE_PROMPT,
-        num_frames=NUM_FRAMES,
-        height=HEIGHT,
-        width=WIDTH,
-        num_inference_steps=int(steps),
-        guidance_scale=6.0,
-        output_type="pil",
-        generator=generator,
-    ).frames[0]
+    try:
+        generator = torch.Generator(device="cuda").manual_seed(seed)
+        frames = pipe(
+            prompt=full_prompt,
+            negative_prompt=NEGATIVE_PROMPT,
+            num_frames=NUM_FRAMES,
+            height=HEIGHT,
+            width=WIDTH,
+            num_inference_steps=int(steps),
+            guidance_scale=6.0,
+            output_type="pil",
+            generator=generator,
+        ).frames[0]
 
-    out_path = f"/kaggle/working/clip_seed{seed}.mp4"
-    export_to_video(frames, out_path, fps=FPS)
-    torch.cuda.empty_cache()
-    return out_path, f"Seed used: {seed} (same seed + prompt = same result, change seed for variety)"
+        out_path = f"/kaggle/working/clip_seed{seed}.mp4"
+        export_to_video(frames, out_path, fps=FPS)
+        return out_path, f"Seed used: {seed} (same seed + prompt = same result, change seed for variety)"
+    except Exception as e:
+        # Returned directly (not raised) so both the UI and any API caller
+        # see the real reason instead of Gradio's generic hidden AppError.
+        import traceback
+        tb = traceback.format_exc()
+        print(f"GENERATE FAILED: {tb}", flush=True)
+        return None, f"ERROR: {type(e).__name__}: {e}"
+    finally:
+        torch.cuda.empty_cache()
 
 
 with gr.Blocks(title="VoidVideo Clip Studio") as demo:
@@ -272,4 +281,4 @@ with gr.Blocks(title="VoidVideo Clip Studio") as demo:
 
     btn.click(fn=generate, inputs=[prompt_box, steps_slider, seed_box], outputs=[video_out, status])
 
-demo.queue().launch(share=True)
+demo.queue().launch(share=True, show_error=True)
