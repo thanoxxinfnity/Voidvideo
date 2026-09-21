@@ -47,6 +47,7 @@ outputs/*
 # --- Kaggle push staging ---
 kaggle_dataset_staging/
 kaggle_kernel_staging/
+kaggle_kernel_staging_clipgen/
 
 # --- Caption Studio (local dataset builder) ---
 caption-studio/dataset/videos/*

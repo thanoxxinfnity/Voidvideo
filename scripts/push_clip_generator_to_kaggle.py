@@ -1,0 +1,73 @@
+#!/usr/bin/env python3
+"""
+Push scripts/kaggle_clip_generator_entrypoint.py to Kaggle as a GPU-enabled
+kernel and trigger a run. Unlike the training kernel, this one is fully
+self-contained (no repo clone, no dataset mount) -- it generates clips with
+CogVideoX-2b and uploads each one directly to the live site as it finishes.
+
+Usage:
+    python scripts/setup_kaggle_credentials.py
+    python scripts/push_clip_generator_to_kaggle.py
+"""
+import json
+import shutil
+import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+ENTRYPOINT_SRC = REPO_ROOT / "scripts" / "kaggle_clip_generator_entrypoint.py"
+STAGING_DIR = REPO_ROOT / "kaggle_kernel_staging_clipgen"
+
+KERNEL_SLUG_DEFAULT = "voidvideo-clip-generator"
+
+
+def main():
+    import os
+    from dotenv import load_dotenv
+
+    load_dotenv(REPO_ROOT / ".env")
+    username = os.environ.get("KAGGLE_USERNAME")
+    kernel_slug = f"{username}/{KERNEL_SLUG_DEFAULT}" if username else None
+
+    from kaggle.api.kaggle_api_extended import KaggleApi
+
+    api = KaggleApi()
+    api.authenticate()
+
+    if not kernel_slug:
+        kernel_slug = f"{api.get_config_value('username')}/{KERNEL_SLUG_DEFAULT}"
+
+    if STAGING_DIR.exists():
+        shutil.rmtree(STAGING_DIR)
+    STAGING_DIR.mkdir()
+
+    shutil.copy(ENTRYPOINT_SRC, STAGING_DIR / "kaggle_entrypoint.py")
+
+    kernel_metadata = {
+        "id": kernel_slug,
+        "title": KERNEL_SLUG_DEFAULT,
+        "code_file": "kaggle_entrypoint.py",
+        "language": "python",
+        "kernel_type": "script",
+        "is_private": True,
+        "enable_gpu": True,
+        "enable_internet": True,  # required: pip install, HF model download, uploads to the site
+        "dataset_sources": [],
+        "competition_sources": [],
+        "kernel_sources": [],
+        "model_sources": [],
+    }
+    (STAGING_DIR / "kernel-metadata.json").write_text(json.dumps(kernel_metadata, indent=2))
+
+    print(f"Pushing kernel {kernel_slug} to Kaggle...")
+    api.kernels_push(str(STAGING_DIR))
+    print(
+        f"Pushed. Kaggle will now build and run it with a GPU.\n"
+        f"Track progress / logs at https://www.kaggle.com/code/{kernel_slug}\n"
+        f"Each clip uploads to the site as soon as it's generated -- check "
+        f"voidvideo-vault.vercel.app any time, no need to wait for the kernel to finish."
+    )
+
+
+if __name__ == "__main__":
+    main()
