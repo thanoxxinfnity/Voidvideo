@@ -29,13 +29,39 @@ const CATEGORIES = [
   },
 ];
 
+const AUTO_TAB = { slug: "auto", label: "Smart Upload", icon: "⚡" };
+const OVERALL_GOAL = 400;
+
+// Filename-based category guesser. There's no reliable way to look at a video's
+// actual motion content without a trained classifier (which is the whole
+// point of collecting this dataset in the first place), so this matches
+// keywords in the filename instead — good enough for clips named the way
+// people naturally name them (walk_01.mp4, wave_2.mov, etc).
+const CATEGORY_KEYWORDS = {
+  locomotion: ["walk", "run", "jog", "sprint", "idle", "breath", "turn", "stride", "step", "locomotion", "gait"],
+  gestures: ["wave", "point", "reach", "pickup", "pick-up", "pick_up", "door", "phone", "gesture", "grab", "hold", "open"],
+  expressions: ["blink", "smile", "frown", "sad", "surprise", "surprised", "talk", "mouth", "flap", "angry", "expression", "cry", "laugh", "shock", "face"],
+  "secondary-motion": ["hair", "sway", "cloth", "dupatta", "leaf", "water", "ripple", "curtain", "wind", "fabric", "scarf", "skirt", "secondary"],
+};
+
 const VIDEO_EXT_RE = /\.(mp4|mov|webm|mkv|avi|m4v|3gp|3gpp|wmv|flv|mts|m2ts)$/i;
 
 const counts = {};
+const staging = new Map();
+let stagingIdSeq = 0;
 
 function isVideoFile(file) {
   if (file.type) return file.type.startsWith("video/");
   return VIDEO_EXT_RE.test(file.name);
+}
+
+function guessCategory(filename) {
+  const lower = filename.toLowerCase();
+  for (const cat of CATEGORIES) {
+    const keywords = CATEGORY_KEYWORDS[cat.slug] || [];
+    if (keywords.some((kw) => lower.includes(kw))) return cat.slug;
+  }
+  return null;
 }
 
 function fmtBytes(bytes) {
@@ -70,8 +96,9 @@ function timeAgo(iso) {
 function buildTabs() {
   const tabsEl = document.getElementById("tabs");
   const panelsEl = document.getElementById("panels");
+  const allTabs = [AUTO_TAB, ...CATEGORIES];
 
-  CATEGORIES.forEach((cat, i) => {
+  allTabs.forEach((cat, i) => {
     const btn = document.createElement("button");
     btn.className = "tab-btn" + (i === 0 ? " active" : "");
     btn.innerHTML = `<span class="tab-icon">${cat.icon}</span> ${cat.label}`;
@@ -82,24 +109,30 @@ function buildTabs() {
     const panel = document.createElement("section");
     panel.className = "panel" + (i === 0 ? " active" : "");
     panel.id = `panel-${cat.slug}`;
-    panel.innerHTML = `
-      <div class="panel-header">
-        <h2>${cat.icon} ${cat.label}</h2>
-        <span class="count-badge" id="badge-${cat.slug}">0 / ${cat.target}</span>
-      </div>
-      <p class="panel-desc">${cat.desc}</p>
-      <div class="dropzone" id="dropzone-${cat.slug}">
-        <div class="dropzone-icon">🎬</div>
-        <div class="dropzone-text"><strong>Videos drag & drop karo</strong> ya click karke chuno</div>
-        <div class="dropzone-hint">.mp4 .mov .webm .mkv &mdash; sirf video, images/photos allowed nahi hain</div>
-        <input type="file" id="input-${cat.slug}" accept="video/*" multiple />
-      </div>
-      <div class="upload-queue" id="queue-${cat.slug}"></div>
-      <div class="grid" id="grid-${cat.slug}"></div>
-    `;
-    panelsEl.appendChild(panel);
 
-    wireDropzone(cat.slug);
+    if (cat.slug === "auto") {
+      panel.innerHTML = buildAutoPanelHTML();
+      panelsEl.appendChild(panel);
+      wireAutoDropzone();
+    } else {
+      panel.innerHTML = `
+        <div class="panel-header">
+          <h2>${cat.icon} ${cat.label}</h2>
+          <span class="count-badge" id="badge-${cat.slug}">0 / ${cat.target}</span>
+        </div>
+        <p class="panel-desc">${cat.desc}</p>
+        <div class="dropzone" id="dropzone-${cat.slug}">
+          <div class="dropzone-icon">🎬</div>
+          <div class="dropzone-text"><strong>Videos drag & drop karo</strong> ya click karke chuno</div>
+          <div class="dropzone-hint">.mp4 .mov .webm .mkv &mdash; sirf video, images/photos allowed nahi hain</div>
+          <input type="file" id="input-${cat.slug}" accept="video/*" multiple />
+        </div>
+        <div class="upload-queue" id="queue-${cat.slug}"></div>
+        <div class="grid" id="grid-${cat.slug}"></div>
+      `;
+      panelsEl.appendChild(panel);
+      wireDropzone(cat.slug);
+    }
   });
 }
 
@@ -107,6 +140,208 @@ function activateTab(slug) {
   document.querySelectorAll(".tab-btn").forEach((b) => b.classList.toggle("active", b.dataset.slug === slug));
   document.querySelectorAll(".panel").forEach((p) => p.classList.toggle("active", p.id === `panel-${slug}`));
 }
+
+// --- Smart Upload (auto-detect) tab -----------------------------------
+
+function buildAutoPanelHTML() {
+  return `
+    <div class="panel-header">
+      <h2>⚡ Smart Upload</h2>
+      <span class="count-badge">Auto category-detect</span>
+    </div>
+    <p class="panel-desc">
+      Sirf videos yahan daal do — filename dekh ke category khud guess ho jayegi
+      (jaise "walk_01.mp4" → Locomotion). Guess galat lage toh dropdown se badal do,
+      phir "Upload All" dabao.
+    </p>
+    <div class="dropzone" id="dropzone-auto">
+      <div class="dropzone-icon">🎬</div>
+      <div class="dropzone-text"><strong>Videos yahan daalo</strong> ya click karke chuno</div>
+      <div class="dropzone-hint">.mp4 .mov .webm .mkv &mdash; sirf video, images/photos allowed nahi hain</div>
+      <input type="file" id="input-auto" accept="video/*" multiple />
+    </div>
+    <div id="staging-list" class="staging-list"></div>
+    <div id="staging-actions" class="staging-actions" style="display:none;">
+      <span id="staging-hint" class="staging-hint"></span>
+      <div class="staging-buttons">
+        <button id="staging-clear" class="btn-secondary" type="button">Clear</button>
+        <button id="staging-upload-all" class="btn-primary" type="button">Upload All</button>
+      </div>
+    </div>
+  `;
+}
+
+function wireAutoDropzone() {
+  const zone = document.getElementById("dropzone-auto");
+  const input = document.getElementById("input-auto");
+
+  zone.onclick = () => input.click();
+  input.onchange = () => {
+    addToStaging(input.files);
+    input.value = "";
+  };
+
+  ["dragenter", "dragover"].forEach((evt) =>
+    zone.addEventListener(evt, (e) => {
+      e.preventDefault();
+      zone.classList.add("dragover");
+    })
+  );
+  ["dragleave", "drop"].forEach((evt) =>
+    zone.addEventListener(evt, (e) => {
+      e.preventDefault();
+      zone.classList.remove("dragover");
+    })
+  );
+  zone.addEventListener("drop", (e) => addToStaging(e.dataTransfer.files));
+
+  document.getElementById("staging-clear").onclick = () => {
+    staging.clear();
+    renderStagingList();
+  };
+  document.getElementById("staging-upload-all").onclick = uploadAllStaging;
+}
+
+function addToStaging(fileList) {
+  const files = Array.from(fileList);
+  for (const file of files) {
+    const id = ++stagingIdSeq;
+    if (!isVideoFile(file)) {
+      staging.set(id, { file, slug: null, status: "invalid" });
+      continue;
+    }
+    staging.set(id, { file, slug: guessCategory(file.name), status: "pending", progress: 0 });
+  }
+  renderStagingList();
+}
+
+function statusLabel(item) {
+  if (item.status === "pending") return item.slug ? "🔍 auto-detected" : "❓ pick karo";
+  if (item.status === "uploading") return `Uploading… ${item.progress}%`;
+  if (item.status === "done") return "✅ Uploaded";
+  if (item.status === "error") return `❌ ${item.errorMsg || "Failed"}`;
+  return "";
+}
+
+function renderStagingList() {
+  const listEl = document.getElementById("staging-list");
+  const actionsEl = document.getElementById("staging-actions");
+  const hintEl = document.getElementById("staging-hint");
+  const uploadBtn = document.getElementById("staging-upload-all");
+
+  if (staging.size === 0) {
+    listEl.innerHTML = "";
+    actionsEl.style.display = "none";
+    return;
+  }
+
+  actionsEl.style.display = "flex";
+  listEl.innerHTML = "";
+
+  let pendingCount = 0;
+  let needsCategory = 0;
+
+  staging.forEach((item, id) => {
+    const row = document.createElement("div");
+    row.className = "staging-row" + (item.status === "invalid" || item.status === "error" ? " error" : "") + (item.status === "done" ? " done" : "");
+    row.dataset.id = id;
+
+    if (item.status === "invalid") {
+      row.innerHTML = `
+        <div class="row-top">
+          <span class="row-name" title="${item.file.name}">${item.file.name}</span>
+          <span class="row-status">❌ Image/doc hai, video nahi</span>
+        </div>
+        <div class="staging-row-bottom">
+          <span></span>
+          <button class="row-remove" type="button" title="Remove">✕</button>
+        </div>
+      `;
+    } else {
+      if (item.status === "pending") {
+        pendingCount += 1;
+        if (!item.slug) needsCategory += 1;
+      }
+
+      const options = CATEGORIES.map(
+        (c) => `<option value="${c.slug}" ${item.slug === c.slug ? "selected" : ""}>${c.icon} ${c.label}</option>`
+      ).join("");
+
+      row.innerHTML = `
+        <div class="row-top">
+          <span class="row-name" title="${item.file.name}">${item.file.name}</span>
+          <span class="row-status">${statusLabel(item)}</span>
+        </div>
+        <div class="staging-row-bottom">
+          <select class="staging-select" ${item.status !== "pending" ? "disabled" : ""} ${!item.slug ? 'data-empty="1"' : ""}>
+            <option value="" ${!item.slug ? "selected" : ""} disabled>❓ Category chuno</option>
+            ${options}
+          </select>
+          <button class="row-remove" type="button" title="Remove" ${item.status === "uploading" ? "disabled" : ""}>✕</button>
+        </div>
+        <div class="row-bar"><div class="row-bar-fill" style="width:${item.progress || 0}%"></div></div>
+      `;
+
+      row.querySelector(".staging-select").onchange = (e) => {
+        item.slug = e.target.value || null;
+        renderStagingList();
+      };
+      row.querySelector(".row-remove").onclick = () => {
+        staging.delete(id);
+        renderStagingList();
+      };
+    }
+
+    listEl.appendChild(row);
+  });
+
+  if (needsCategory > 0) {
+    hintEl.textContent = `⚠️ ${needsCategory} file(s) ko category chunni baaki hai`;
+    uploadBtn.disabled = true;
+  } else if (pendingCount === 0) {
+    hintEl.textContent = "Sab ho gaya ✅";
+    uploadBtn.disabled = true;
+  } else {
+    hintEl.textContent = `${pendingCount} video ready to upload`;
+    uploadBtn.disabled = false;
+  }
+}
+
+function updateStagingRowProgress(id, pct) {
+  const row = document.querySelector(`#staging-list [data-id="${id}"]`);
+  if (!row) return;
+  const bar = row.querySelector(".row-bar-fill");
+  const status = row.querySelector(".row-status");
+  if (bar) bar.style.width = `${pct}%`;
+  if (status) status.textContent = `Uploading… ${pct}%`;
+}
+
+async function uploadAllStaging() {
+  const touchedSlugs = new Set();
+  const entries = Array.from(staging.entries()).filter(([, item]) => item.status === "pending" && item.slug);
+
+  for (const [id, item] of entries) {
+    item.status = "uploading";
+    item.progress = 0;
+    renderStagingList();
+    try {
+      await uploadOne(item.slug, item.file, (pct) => {
+        item.progress = pct;
+        updateStagingRowProgress(id, pct);
+      });
+      item.status = "done";
+      touchedSlugs.add(item.slug);
+    } catch (err) {
+      item.status = "error";
+      item.errorMsg = err.message;
+    }
+    renderStagingList();
+  }
+
+  for (const slug of touchedSlugs) await loadCategory(slug);
+}
+
+// --- Per-category tabs (browse / manual upload) ------------------------
 
 function wireDropzone(slug) {
   const zone = document.getElementById(`dropzone-${slug}`);
@@ -317,10 +552,10 @@ function renderCard(slug, clip) {
 function updateOverallProgress() {
   const total = Object.values(counts).reduce((a, b) => a + b, 0);
   const el = document.getElementById("overall-progress");
-  const pct = Math.min(100, (total / 300) * 100);
+  const pct = Math.min(100, (total / OVERALL_GOAL) * 100);
   el.innerHTML = `
     <div class="bar"><div class="bar-fill" style="width:${pct}%"></div></div>
-    <p style="margin:6px 0 0;color:var(--muted);font-size:13px;">${total} total clips uploaded (goal: 150–300)</p>
+    <p style="margin:6px 0 0;color:var(--muted);font-size:13px;">${total} / ${OVERALL_GOAL} clips uploaded &mdash; koi upload limit nahi hai, ye sirf progress count hai</p>
   `;
 }
 
