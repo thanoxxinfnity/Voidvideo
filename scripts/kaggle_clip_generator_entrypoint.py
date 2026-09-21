@@ -74,6 +74,10 @@ PROMPTS = {
         "a hand-drawn anime girl walking, filmed from the side profile",
         "a hand-drawn anime character jogging along a beach at sunset",
         "a hand-drawn anime boy walking up a staircase",
+        "a hand-drawn anime boy in a fighting stance, dodging and weaving side to side",
+        "a hand-drawn anime girl sprinting forward then leaping into a spinning kick",
+        "a hand-drawn anime character charging forward aggressively into battle",
+        "a hand-drawn anime boy dashing sideways fast to dodge an incoming attack",
     ],
     "gestures": [
         "a hand-drawn anime girl waving her hand cheerfully at the camera",
@@ -82,6 +86,11 @@ PROMPTS = {
         "a hand-drawn anime girl opening a wooden door",
         "a hand-drawn anime boy checking his phone and typing",
         "a hand-drawn anime character picking up a book from a shelf",
+        "a hand-drawn anime boy throwing a powerful punch forward",
+        "a hand-drawn anime girl kicking high with a fierce battle cry",
+        "a hand-drawn anime character blocking an incoming attack with crossed arms",
+        "a hand-drawn anime boy drawing a sword from its sheath",
+        "a hand-drawn anime character clenching a fist in preparation to strike",
     ],
     "expressions": [
         "a hand-drawn anime girl blinking slowly in a close-up shot",
@@ -90,6 +99,10 @@ PROMPTS = {
         "a hand-drawn anime girl looking surprised with wide eyes in a close-up shot",
         "a hand-drawn anime boy talking animatedly in a close-up shot",
         "a hand-drawn anime character looking angry with furrowed eyebrows in a close-up shot",
+        "a hand-drawn anime character shouting furiously with gritted teeth in a close-up shot",
+        "a hand-drawn anime boy glaring with intense rage in a close-up shot",
+        "a hand-drawn anime girl smirking confidently before a fight in a close-up shot",
+        "a hand-drawn anime character screaming in battle fury in a close-up shot",
     ],
     "secondary-motion": [
         "hand-drawn anime style autumn leaves falling gently along an empty forest path, no people",
@@ -97,6 +110,8 @@ PROMPTS = {
         "hand-drawn anime style curtains fluttering by an open window, no people",
         "hand-drawn anime style water rippling gently in a calm pond, no people",
         "a hand-drawn anime character's coat and scarf blowing in a strong wind",
+        "hand-drawn anime style sparks and embers flying from a clashing sword fight, no people visible",
+        "hand-drawn anime style dust and debris kicked up from a powerful impact, no people visible",
     ],
 }
 
