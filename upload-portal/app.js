@@ -350,7 +350,7 @@ function buildTabs() {
           <div class="dropzone-icon">🎬</div>
           <div class="dropzone-text"><strong>Videos drag & drop karo</strong> ya click karke chuno</div>
           <div class="dropzone-hint">.mp4 .mov .webm .mkv &mdash; sirf video, images/photos allowed nahi hain</div>
-          <input type="file" id="input-${cat.slug}" accept="video/*" multiple />
+          <input type="file" id="input-${cat.slug}" multiple />
         </div>
         <div class="upload-queue" id="queue-${cat.slug}"></div>
         <div class="grid" id="grid-${cat.slug}"></div>
@@ -384,7 +384,7 @@ function buildAutoPanelHTML() {
       <div class="dropzone-icon">🎬</div>
       <div class="dropzone-text"><strong>Videos yahan daalo</strong> ya click karke chuno</div>
       <div class="dropzone-hint">.mp4 .mov .webm .mkv &mdash; sirf video, images/photos allowed nahi hain</div>
-      <input type="file" id="input-auto" accept="video/*" multiple />
+      <input type="file" id="input-auto" multiple />
     </div>
     <div id="staging-list" class="staging-list"></div>
     <div id="staging-actions" class="staging-actions" style="display:none;">
