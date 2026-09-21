@@ -51,8 +51,8 @@ FPS = 8
 # spatio-temporal attention trying to allocate a single 70GB tensor, which
 # scales with total tokens (frames x spatial patches) and has nothing to do
 # with dtype. Smaller resolution directly shrinks that token count.
-HEIGHT = 320
-WIDTH = 480
+HEIGHT = 256
+WIDTH = 384
 
 STYLE_SUFFIX = (
     ", modern 2D anime film style, fully colored with natural cel shading and "

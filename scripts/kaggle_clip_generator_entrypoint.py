@@ -70,8 +70,8 @@ FPS = 8
 # spatio-temporal attention trying to allocate a single 70GB tensor, which
 # scales with total tokens (frames x spatial patches) and has nothing to do
 # with dtype. Smaller resolution directly shrinks that token count.
-HEIGHT = 320
-WIDTH = 480
+HEIGHT = 256
+WIDTH = 384
 NUM_INFERENCE_STEPS = 30  # reverted from 40: at 4 attempts/prompt worst case, 40 steps meant
 # up to ~60 real minutes stuck on one hard prompt with zero visible progress or way to check
 # in (Kaggle gives no live logs for a running kernel). 30 is the config already verified
