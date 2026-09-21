@@ -32,11 +32,9 @@ const CATEGORIES = [
 const AUTO_TAB = { slug: "auto", label: "Smart Upload", icon: "⚡" };
 const OVERALL_GOAL = 400;
 
-// Filename-based category guesser. There's no reliable way to look at a video's
-// actual motion content without a trained classifier (which is the whole
-// point of collecting this dataset in the first place), so this matches
-// keywords in the filename instead — good enough for clips named the way
-// people naturally name them (walk_01.mp4, wave_2.mov, etc).
+// Instant filename-based guess, shown immediately while the real AI vision
+// classification (see classifyWithVision below) is still running -- and used
+// as the fallback if that call fails or the key isn't configured.
 const CATEGORY_KEYWORDS = {
   locomotion: ["walk", "run", "jog", "sprint", "idle", "breath", "turn", "stride", "step", "locomotion", "gait"],
   gestures: ["wave", "point", "reach", "pickup", "pick-up", "pick_up", "door", "phone", "gesture", "grab", "hold", "open"],
@@ -46,9 +44,13 @@ const CATEGORY_KEYWORDS = {
 
 const VIDEO_EXT_RE = /\.(mp4|mov|webm|mkv|avi|m4v|3gp|3gpp|wmv|flv|mts|m2ts)$/i;
 
+const CLASSIFY_CONCURRENCY = 2;
+
 const counts = {};
 const staging = new Map();
 let stagingIdSeq = 0;
+let activeClassifyCount = 0;
+const classifyQueue = [];
 
 function isVideoFile(file) {
   if (file.type) return file.type.startsWith("video/");
@@ -62,6 +64,106 @@ function guessCategory(filename) {
     if (keywords.some((kw) => lower.includes(kw))) return cat.slug;
   }
   return null;
+}
+
+// Grabs one downscaled JPEG frame from the middle of the clip and returns it
+// as base64 (no "data:" prefix), small enough to send to a vision model.
+function extractFrameBase64(file) {
+  return new Promise((resolve, reject) => {
+    const video = document.createElement("video");
+    video.muted = true;
+    video.playsInline = true;
+    video.preload = "auto";
+    const url = URL.createObjectURL(file);
+    video.src = url;
+
+    const cleanup = () => URL.revokeObjectURL(url);
+    const fail = (err) => { cleanup(); reject(err); };
+
+    video.addEventListener("loadedmetadata", () => {
+      const mid = (video.duration || 0) / 2;
+      video.currentTime = isFinite(mid) && mid > 0 ? mid : 0;
+    });
+
+    video.addEventListener("seeked", () => {
+      try {
+        const w = video.videoWidth || 384;
+        const h = video.videoHeight || 216;
+        const scale = Math.min(1, 384 / w);
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.max(1, Math.round(w * scale));
+        canvas.height = Math.max(1, Math.round(h * scale));
+        canvas.getContext("2d").drawImage(video, 0, 0, canvas.width, canvas.height);
+        const dataUrl = canvas.toDataURL("image/jpeg", 0.6);
+        cleanup();
+        resolve(dataUrl.split(",")[1]);
+      } catch (err) {
+        fail(err);
+      }
+    });
+
+    video.addEventListener("error", () => fail(new Error("Could not read video frame")));
+    video.load();
+  });
+}
+
+async function classifyWithVision(file) {
+  const imageBase64 = await extractFrameBase64(file);
+  const res = await fetch("/api/classify", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ imageBase64 }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || "Classify failed");
+  return data.category || null;
+}
+
+function scheduleClassify(id, item) {
+  classifyQueue.push({ id, item });
+  pumpClassifyQueue();
+}
+
+function pumpClassifyQueue() {
+  while (activeClassifyCount < CLASSIFY_CONCURRENCY && classifyQueue.length > 0) {
+    const { id, item } = classifyQueue.shift();
+    activeClassifyCount++;
+    runClassify(id, item).finally(() => {
+      activeClassifyCount--;
+      pumpClassifyQueue();
+    });
+  }
+}
+
+async function runClassify(id, item) {
+  if (!staging.has(id) || item.status !== "pending") return;
+  item.analyzing = true;
+  renderStagingList();
+
+  try {
+    const category = await classifyWithVision(item.file);
+    if (staging.has(id) && item.status === "pending" && !item.manualOverride) {
+      if (category) {
+        item.slug = category;
+        item.detectedBy = "ai";
+      } else {
+        // Model looked at the frame and genuinely wasn't confident -- keep
+        // whatever filename guess exists, but say AI was consulted.
+        item.detectedBy = "ai-unsure";
+      }
+    }
+  } catch {
+    // Frame extraction or the API call itself failed (unsupported codec,
+    // network, missing key). This must be visible, not silent -- a silent
+    // fallback here is exactly the "galat ho gaya, pata bhi nahi chala"
+    // failure mode that matters for training data quality.
+    if (staging.has(id) && item.status === "pending" && !item.manualOverride) {
+      item.aiFailed = true;
+    }
+  } finally {
+    if (staging.has(id)) item.analyzing = false;
+    renderStagingList();
+  }
 }
 
 function fmtBytes(bytes) {
@@ -150,9 +252,9 @@ function buildAutoPanelHTML() {
       <span class="count-badge">Auto category-detect</span>
     </div>
     <p class="panel-desc">
-      Sirf videos yahan daal do — filename dekh ke category khud guess ho jayegi
-      (jaise "walk_01.mp4" → Locomotion). Guess galat lage toh dropdown se badal do,
-      phir "Upload All" dabao.
+      Sirf videos yahan daal do — ek AI vision model video ka frame dekh ke category khud
+      guess kar lega (🤖 AI-detected), filename bhi turant ek hint deta hai (🔍) jab tak AI check kar raha ho.
+      Guess galat lage toh dropdown se badal do, phir "Upload All" dabao.
     </p>
     <div class="dropzone" id="dropzone-auto">
       <div class="dropzone-icon">🎬</div>
@@ -210,13 +312,22 @@ function addToStaging(fileList) {
       staging.set(id, { file, slug: null, status: "invalid" });
       continue;
     }
-    staging.set(id, { file, slug: guessCategory(file.name), status: "pending", progress: 0 });
+    const item = { file, slug: guessCategory(file.name), status: "pending", progress: 0, detectedBy: null, analyzing: false };
+    staging.set(id, item);
+    scheduleClassify(id, item);
   }
   renderStagingList();
 }
 
 function statusLabel(item) {
-  if (item.status === "pending") return item.slug ? "🔍 auto-detected" : "❓ pick karo";
+  if (item.status === "pending") {
+    if (item.analyzing) return "🔎 AI dekh raha hai…";
+    if (item.detectedBy === "ai") return "🤖 AI-detected";
+    if (item.detectedBy === "manual") return "✋ manually set";
+    if (item.aiFailed) return item.slug ? "⚠️ AI fail hua — filename guess" : "⚠️ AI fail hua — pick karo";
+    if (item.detectedBy === "ai-unsure") return item.slug ? "🔍 filename guess (AI unsure)" : "❓ AI unsure — pick karo";
+    return item.slug ? "🔍 filename guess" : "❓ pick karo";
+  }
   if (item.status === "uploading") return `Uploading… ${item.progress}%`;
   if (item.status === "done") return "✅ Uploaded";
   if (item.status === "error") return `❌ ${item.errorMsg || "Failed"}`;
@@ -243,7 +354,10 @@ function renderStagingList() {
 
   staging.forEach((item, id) => {
     const row = document.createElement("div");
-    row.className = "staging-row" + (item.status === "invalid" || item.status === "error" ? " error" : "") + (item.status === "done" ? " done" : "");
+    row.className = "staging-row" +
+      (item.status === "invalid" || item.status === "error" ? " error" : "") +
+      (item.status === "done" ? " done" : "") +
+      (item.status === "pending" && item.aiFailed ? " warn" : "");
     row.dataset.id = id;
 
     if (item.status === "invalid") {
@@ -284,6 +398,8 @@ function renderStagingList() {
 
       row.querySelector(".staging-select").onchange = (e) => {
         item.slug = e.target.value || null;
+        item.manualOverride = true;
+        item.detectedBy = "manual";
         renderStagingList();
       };
       row.querySelector(".row-remove").onclick = () => {

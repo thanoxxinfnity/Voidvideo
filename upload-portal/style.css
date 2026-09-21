@@ -209,6 +209,8 @@ main {
 .staging-row.done .row-bar-fill { background: #4ade80; }
 .staging-row.done .row-status { color: #4ade80; }
 .staging-row.error .row-status { color: var(--danger); }
+.staging-row.warn { border-color: #f5a623; }
+.staging-row.warn .row-status { color: #f5a623; }
 
 .staging-row-bottom {
   display: flex;

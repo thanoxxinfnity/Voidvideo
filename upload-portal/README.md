@@ -5,12 +5,18 @@ training clips, organized by motion/expression category, with per-clip delete
 (like a YouTube Studio uploads list). Clips are stored in Cloudinary; nothing
 is stored in this repo or on the hosting platform itself.
 
+A "Smart Upload" tab lets you drop clips without picking a category first — an
+NVIDIA NIM vision model looks at a frame from the middle of each clip and
+guesses locomotion/gestures/expressions/secondary-motion, shown as an editable
+per-file dropdown so you can confirm or correct it before uploading.
+
 Two equivalent backends are included — deploy to whichever platform works for
 you, they don't need to coexist:
 
-- **Vercel**: `api/sign.js`, `api/list.js`, `api/delete.js`
-- **Netlify**: `netlify/functions/sign.js`, `list.js`, `delete.js` + `netlify.toml`
-  (routes `/api/*` to the functions so the frontend code is identical either way)
+- **Vercel**: `api/sign.js`, `api/list.js`, `api/delete.js`, `api/classify.js`
+- **Netlify**: `netlify/functions/sign.js`, `list.js`, `delete.js`, `classify.js`
+  + `netlify.toml` (routes `/api/*` to the functions so the frontend code is
+  identical either way)
 
 `index.html` / `style.css` / `app.js` is the whole frontend, plain JS, no build step,
 shared by both.
@@ -21,9 +27,11 @@ shared by both.
 2. When configuring the project:
    - **Root Directory**: `upload-portal` (important — this is a subfolder of the repo)
    - **Framework Preset**: "Other"
-3. Under **Environment Variables**, add (paste your real Cloudinary values directly into the
+3. Under **Environment Variables**, add (paste your real values directly into the
    dashboard, not into any file in this repo):
    - `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, `CLOUDINARY_API_SECRET`
+   - `NVIDIA_API_KEY` (free key from https://build.nvidia.com — only needed for
+     the Smart Upload tab's AI category detection; everything else works without it)
 4. Click **Deploy**.
 
 ## Deploy option B: CLI, no GitHub needed at all (Vercel or Netlify)
@@ -40,6 +48,7 @@ vercel link
 vercel env add CLOUDINARY_CLOUD_NAME production
 vercel env add CLOUDINARY_API_KEY production
 vercel env add CLOUDINARY_API_SECRET production
+vercel env add NVIDIA_API_KEY production   # optional, powers AI category detection
 vercel --prod
 ```
 
@@ -54,6 +63,7 @@ netlify init          # choose "Create & configure a new site"
 netlify env:set CLOUDINARY_CLOUD_NAME <your_cloud_name>
 netlify env:set CLOUDINARY_API_KEY <your_api_key>
 netlify env:set CLOUDINARY_API_SECRET <your_api_secret>
+netlify env:set NVIDIA_API_KEY <your_nvapi_key>   # optional, powers AI category detection
 netlify deploy --prod
 ```
 
