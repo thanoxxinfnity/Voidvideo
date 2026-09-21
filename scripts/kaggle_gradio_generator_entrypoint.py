@@ -208,16 +208,17 @@ for _cat, _prompts in PROMPTS.items():
         CHOICES.append((label, _p))
 
 print(f"Loading {COGVIDEOX_MODEL_ID}...", flush=True)
-# Whole pipeline in float32 -- no mixed dtypes. Previously kept the VAE in
-# float32 while the transformer stayed fp16 (a known mitigation for
-# CogVideoX-2b's fp16 VAE decode overflowing to NaN/white on T4-class GPUs),
-# but that combination crashes under enable_model_cpu_offload() with
-# "Input type (c10::Half) and bias type (float) should be the same" --
-# confirmed via a real generation call once errors stopped being silently
-# swallowed. Slower than fp16, but CogVideoX-2b (2B params) with CPU
-# offload fits fine in float32 on a free-tier GPU, and this removes an
-# entire class of dtype-mismatch crashes along with the overflow bug.
-pipe = CogVideoXPipeline.from_pretrained(COGVIDEOX_MODEL_ID, torch_dtype=torch.float32)
+# Whole pipeline in bfloat16 -- no mixed dtypes, same memory footprint as
+# fp16 (float32 just OOM'd on this 14.5GB T4: "Tried to allocate 20.00 MiB
+# ... 14.54 GiB memory in use"). bf16 has the same wide exponent range as
+# fp32 (unlike fp16), which is what actually avoids the VAE decode
+# overflowing to NaN/white on T4-class GPUs -- fp16 has a narrow exponent
+# range and overflows there, float32 fixed that but doesn't fit, and mixing
+# fp16-transformer with fp32-VAE crashed under enable_model_cpu_offload().
+# bf16 throughout sidesteps all three failure modes at once. T4 lacks
+# native bf16 tensor cores so this may compute a bit slower than fp16, but
+# that's a fine tradeoff for actually fitting and not crashing.
+pipe = CogVideoXPipeline.from_pretrained(COGVIDEOX_MODEL_ID, torch_dtype=torch.bfloat16)
 pipe.enable_model_cpu_offload()
 pipe.vae.enable_slicing()
 pipe.vae.enable_tiling()

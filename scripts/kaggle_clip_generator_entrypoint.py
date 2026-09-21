@@ -379,18 +379,19 @@ def load_cogvideox():
     # script sends unauthenticated requests -- no HF_TOKEN set) has caused
     # silent multi-hour hangs here before. A real load finishes in a couple
     # of minutes, so 600s is already a generous margin, not a tight cutoff.
-    # Whole pipeline in float32 -- no mixed dtypes. Previously kept the VAE
-    # in float32 while the transformer stayed fp16 (a known mitigation for
-    # CogVideoX-2b's fp16 VAE decode overflowing to NaN/white on T4-class
-    # GPUs), but that combination crashes under enable_model_cpu_offload()
-    # with "Input type (c10::Half) and bias type (float) should be the
-    # same" -- confirmed via the manual Gradio tool once errors stopped
-    # being silently swallowed. This was very likely the real cause behind
-    # a chunk of this script's own silent "failed" count all along, since
-    # its per-clip except-block only ever logged to output nobody could see
-    # live. Slower than fp16, but fits fine with CPU offload on a free GPU.
+    # Whole pipeline in bfloat16 -- no mixed dtypes, same memory footprint as
+    # fp16 (float32 OOM'd on a 14.5GB T4: "Tried to allocate 20.00 MiB ...
+    # 14.54 GiB memory in use", confirmed via the manual Gradio tool).
+    # bf16 has fp32's wide exponent range (unlike fp16, which is what
+    # actually overflows to NaN/white during VAE decode on T4-class GPUs)
+    # while fitting in the same memory fp16 does, and it's a single dtype
+    # throughout so it doesn't hit the fp16/fp32-VAE mismatch that crashed
+    # under enable_model_cpu_offload() either. This was very likely the
+    # real cause behind a chunk of this script's own silent "failed" count
+    # all along, since its per-clip except-block only ever logged to output
+    # nobody could see live.
     pipe = with_timeout(
-        600, CogVideoXPipeline.from_pretrained, COGVIDEOX_MODEL_ID, torch_dtype=torch.float32
+        600, CogVideoXPipeline.from_pretrained, COGVIDEOX_MODEL_ID, torch_dtype=torch.bfloat16
     )
     print("Model weights loaded.", flush=True)
     pipe.enable_model_cpu_offload()
