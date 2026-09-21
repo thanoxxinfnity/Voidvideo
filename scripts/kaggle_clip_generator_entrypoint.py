@@ -66,9 +66,12 @@ NUM_FRAMES = 49  # matches configs/training_config.yaml (t2v) exactly
 FPS = 8
 HEIGHT = 480
 WIDTH = 720
-NUM_INFERENCE_STEPS = 40  # bumped from 30 -- user wants quality over speed now
+NUM_INFERENCE_STEPS = 30  # reverted from 40: at 4 attempts/prompt worst case, 40 steps meant
+# up to ~60 real minutes stuck on one hard prompt with zero visible progress or way to check
+# in (Kaggle gives no live logs for a running kernel). 30 is the config already verified
+# working end-to-end earlier in this project -- faster feedback loop matters more here.
 GUIDANCE_SCALE = 6.0
-MAX_RETRIES_PER_PROMPT = 3  # re-roll with a new seed if output looks blank OR uncolored
+MAX_RETRIES_PER_PROMPT = 2  # reverted from 3, same reasoning -- fail faster, move on sooner
 # User's stance shifted from "hard 5-6h cap no matter what" to "take the time you
 # need for real quality, just don't burn the whole day for nothing" -- so this is
 # now a backstop against an actually-stuck/runaway session, not the primary
