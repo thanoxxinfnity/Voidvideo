@@ -10,16 +10,25 @@
 // over time, not one instant of it.
 const ALLOWED_TAGS = ["locomotion", "gestures", "expressions", "secondary-motion"];
 
-const PROMPT = `You are sorting short reference video clips for an animation dataset into exactly one of these 4 categories:
+// Forcing an immediate single-word answer (earlier version) made this model
+// default to "locomotion" almost every time, including for a clip of falling
+// leaves with no character in it at all. Letting it describe the scene in
+// one sentence FIRST, then classify based on its own description, fixed
+// this in testing -- small vision models follow a decision procedure much
+// more reliably when they "think out loud" before answering.
+const PROMPT = `These images are frames sampled evenly across a single short anime video clip, in time order left-to-right then top-to-bottom (read it as a timeline).
 
-- locomotion: walking, running, jogging, idle standing/breathing, turning around, changing stance
-- gestures: waving, pointing, reaching for something, picking up an object, opening a door, using a phone, hand/arm actions
-- expressions: close-up facial expressions -- blinking, smiling, frowning, surprise, talking, anger
-- secondary-motion: passive ambient motion with no deliberate human action -- hair swaying, cloth/fabric moving, leaves falling, water rippling, a curtain moving
+First, in one short sentence, describe exactly what is moving in this clip and whether a character's body/hand/face is the main subject, or whether nothing in frame is a character at all.
 
-This image is a contact sheet of several frames sampled evenly across a single short video clip, arranged in time order left-to-right, then top-to-bottom (so it reads like a timeline, not separate images). Judge the motion and change you can see ACROSS the frames -- not just what one cell shows -- and pick the single best-matching category for the whole clip.
-Reply with ONLY one lowercase word, exactly one of: locomotion, gestures, expressions, secondary-motion, unsure
-No punctuation, no explanation, no other text.`;
+Then, on a new line, write "CATEGORY: " followed by exactly one of these 4 words based on your own description above:
+- secondary-motion -- ONLY if no character is visible in the clip at all (e.g. just falling leaves, rippling water, an empty room)
+- gestures -- if a character's hand/arm deliberately reaches, grabs, points, waves, or opens something
+- expressions -- if a character IS visible and their face shows a clear emotion (smile, frown, surprise, blink, talk) -- pick this even if their hair is also blowing in the wind, the hair is not the point
+- locomotion -- if a character IS visible and their whole body is walking, running, turning, or idly standing with no particular expression or hand action being the point
+
+Example output:
+A red leaf is falling through the air with no person visible.
+CATEGORY: secondary-motion`;
 
 exports.handler = async (event) => {
   if (event.httpMethod !== "POST") {
@@ -65,7 +74,7 @@ exports.handler = async (event) => {
             ],
           },
         ],
-        max_tokens: 16,
+        max_tokens: 80,
         temperature: 0.0,
       }),
     });
@@ -76,7 +85,9 @@ exports.handler = async (event) => {
     }
 
     const raw = (data.choices?.[0]?.message?.content || "").trim().toLowerCase();
-    const match = ALLOWED_TAGS.find((tag) => raw.includes(tag));
+    const markerIdx = raw.lastIndexOf("category:");
+    const searchText = markerIdx >= 0 ? raw.slice(markerIdx) : raw;
+    const match = ALLOWED_TAGS.find((tag) => searchText.includes(tag));
     return json(200, { category: match || null, raw });
   } catch (err) {
     return json(502, { error: `Failed to reach NVIDIA API: ${err.message}` });

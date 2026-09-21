@@ -32,6 +32,8 @@ shared by both.
    - `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, `CLOUDINARY_API_SECRET`
    - `NVIDIA_API_KEY` (free key from https://build.nvidia.com — only needed for
      the Smart Upload tab's AI category detection; everything else works without it)
+   - `HF_TOKEN` (free token from https://huggingface.co/settings/tokens — only
+     needed for auto-captioning on upload; everything else works without it)
 4. Click **Deploy**.
 
 ## Deploy option B: CLI, no GitHub needed at all (Vercel or Netlify)
@@ -49,6 +51,7 @@ vercel env add CLOUDINARY_CLOUD_NAME production
 vercel env add CLOUDINARY_API_KEY production
 vercel env add CLOUDINARY_API_SECRET production
 vercel env add NVIDIA_API_KEY production   # optional, powers AI category detection
+vercel env add HF_TOKEN production         # optional, powers auto-captioning
 vercel --prod
 ```
 
@@ -64,6 +67,7 @@ netlify env:set CLOUDINARY_CLOUD_NAME <your_cloud_name>
 netlify env:set CLOUDINARY_API_KEY <your_api_key>
 netlify env:set CLOUDINARY_API_SECRET <your_api_secret>
 netlify env:set NVIDIA_API_KEY <your_nvapi_key>   # optional, powers AI category detection
+netlify env:set HF_TOKEN <your_hf_token>          # optional, powers auto-captioning
 netlify deploy --prod
 ```
 

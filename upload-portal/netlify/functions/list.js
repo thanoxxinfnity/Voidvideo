@@ -20,7 +20,7 @@ exports.handler = async (event) => {
   }
 
   const auth = Buffer.from(`${apiKey}:${apiSecret}`).toString("base64");
-  const url = `https://api.cloudinary.com/v1_1/${cloudName}/resources/video/tags/${encodeURIComponent(tag)}?max_results=200`;
+  const url = `https://api.cloudinary.com/v1_1/${cloudName}/resources/video/tags/${encodeURIComponent(tag)}?max_results=200&context=true`;
 
   try {
     const cloudinaryRes = await fetch(url, { headers: { Authorization: `Basic ${auth}` } });
@@ -36,6 +36,7 @@ exports.handler = async (event) => {
       bytes: r.bytes,
       duration: r.duration,
       createdAt: r.created_at,
+      caption: r.context?.custom?.caption || null,
     }));
     return json(200, { clips });
   } catch (err) {

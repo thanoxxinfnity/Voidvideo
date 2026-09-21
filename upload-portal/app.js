@@ -150,8 +150,7 @@ function extractFrameGridBase64(file) {
   });
 }
 
-async function classifyWithVision(file) {
-  const imageBase64 = await extractFrameGridBase64(file);
+async function classifyGridImage(imageBase64) {
   const res = await fetch("/api/classify", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -160,6 +159,17 @@ async function classifyWithVision(file) {
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || "Classify failed");
   return data.category || null;
+}
+
+async function captionGridImage(imageBase64) {
+  const res = await fetch("/api/caption", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ imageBase64 }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || "Caption failed");
+  return data.caption || null;
 }
 
 function scheduleClassify(id, item) {
@@ -183,33 +193,53 @@ async function runClassify(id, item) {
   item.analyzing = true;
   renderStagingList();
 
+  let imageBase64;
   try {
-    const category = await classifyWithVision(item.file);
-    if (staging.has(id) && item.status === "pending" && !item.manualOverride) {
-      if (category) {
-        item.slug = category;
-        item.detectedBy = "ai";
-        // AI actually looked at the frame and is confident -- go with it,
-        // no need to make the user click Upload All for every clip.
-        scheduleUpload(id, item);
-      } else {
-        // Model looked at the frame and genuinely wasn't confident -- keep
-        // whatever filename guess exists, but say AI was consulted.
-        item.detectedBy = "ai-unsure";
-      }
-    }
+    imageBase64 = await extractFrameGridBase64(item.file);
   } catch {
-    // Frame extraction or the API call itself failed (unsupported codec,
-    // network, missing key). This must be visible, not silent -- a silent
-    // fallback here is exactly the "galat ho gaya, pata bhi nahi chala"
-    // failure mode that matters for training data quality.
+    // Frame extraction itself failed (unsupported codec, corrupt file).
+    // This must be visible, not silent -- a silent fallback here is exactly
+    // the "galat ho gaya, pata bhi nahi chala" failure mode that matters for
+    // training data quality.
     if (staging.has(id) && item.status === "pending" && !item.manualOverride) {
       item.aiFailed = true;
     }
-  } finally {
     if (staging.has(id)) item.analyzing = false;
     renderStagingList();
+    return;
   }
+
+  // Classify and caption run off the same extracted frame grid in parallel
+  // -- one failing (e.g. HF at capacity) shouldn't block the other.
+  const [classifyResult, captionResult] = await Promise.allSettled([
+    classifyGridImage(imageBase64),
+    captionGridImage(imageBase64),
+  ]);
+
+  if (staging.has(id) && item.status === "pending") {
+    if (captionResult.status === "fulfilled" && captionResult.value) {
+      item.caption = captionResult.value;
+    }
+
+    if (!item.manualOverride) {
+      if (classifyResult.status === "fulfilled" && classifyResult.value) {
+        item.slug = classifyResult.value;
+        item.detectedBy = "ai";
+        // AI actually looked at the clip and is confident -- go with it, no
+        // need to make the user click Upload All for every clip.
+        scheduleUpload(id, item);
+      } else if (classifyResult.status === "fulfilled") {
+        // Model looked at the clip and genuinely wasn't confident -- keep
+        // whatever filename guess exists, but say AI was consulted.
+        item.detectedBy = "ai-unsure";
+      } else {
+        item.aiFailed = true;
+      }
+    }
+  }
+
+  if (staging.has(id)) item.analyzing = false;
+  renderStagingList();
 }
 
 // Once a category is known (AI-confident or manually picked), upload right
@@ -242,7 +272,7 @@ async function performUpload(id, item) {
     await uploadOne(item.slug, item.file, (pct) => {
       item.progress = pct;
       updateStagingRowProgress(id, pct);
-    });
+    }, item.caption);
     item.status = "done";
     await loadCategory(item.slug);
     await loadAllUploads();
@@ -258,6 +288,11 @@ function fmtBytes(bytes) {
   if (!bytes) return "";
   const mb = bytes / (1024 * 1024);
   return mb >= 1 ? `${mb.toFixed(1)} MB` : `${(bytes / 1024).toFixed(0)} KB`;
+}
+
+function escapeHtml(str) {
+  const map = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
+  return String(str).replace(/[&<>"']/g, (c) => map[c]);
 }
 
 function fmtDuration(seconds) {
@@ -620,12 +655,12 @@ async function handleFiles(slug, fileList) {
   if (uploadedAny) await loadCategory(slug);
 }
 
-function uploadOne(slug, file, onProgress) {
+function uploadOne(slug, file, onProgress, caption) {
   return new Promise((resolve, reject) => {
     fetch("/api/sign", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ tag: slug }),
+      body: JSON.stringify({ tag: slug, caption }),
     })
       .then(async (signRes) => {
         const signData = await signRes.json();
@@ -638,6 +673,7 @@ function uploadOne(slug, file, onProgress) {
         form.append("signature", signData.signature);
         form.append("folder", signData.folder);
         form.append("tags", signData.tags);
+        if (signData.context) form.append("context", signData.context);
 
         const xhr = new XMLHttpRequest();
         xhr.open("POST", `https://api.cloudinary.com/v1_1/${signData.cloudName}/video/upload`);
@@ -705,6 +741,9 @@ function renderCard(slug, clip, catLabel) {
       <div class="meta-text">
         <span class="clip-name" title="${name}">${name}</span>
         <span class="clip-sub">${fmtBytes(clip.bytes)}${ago ? " • " + ago : ""}</span>
+        ${clip.caption
+          ? `<span class="clip-caption" title="${escapeHtml(clip.caption)}">${escapeHtml(clip.caption)}</span>`
+          : `<span class="clip-caption clip-caption-empty">No caption yet</span>`}
       </div>
       <button class="delete-btn" title="Delete this clip">🗑</button>
     </div>
