@@ -35,6 +35,7 @@ Pushed to Kaggle by scripts/push_clip_generator_to_kaggle.py.
 """
 import random
 import re
+import signal
 import subprocess
 import sys
 import time
@@ -347,9 +348,41 @@ def frame_looks_uncolored(frames) -> bool:
     return avg_saturation < UNCOLORED_SATURATION_THRESHOLD and avg_colored_fraction < MIN_COLORED_PIXEL_FRACTION
 
 
+class StepTimeout(Exception):
+    pass
+
+
+def _timeout_handler(signum, frame):
+    raise StepTimeout()
+
+
+def with_timeout(seconds, fn, *args, **kwargs):
+    """Runs fn with a hard wall-clock deadline. Kaggle gives no way to peek
+    at a running kernel's logs, so a hang here (a slow/throttled model
+    download, a stuck CUDA call) previously looked identical to normal
+    progress from the outside -- multiple runs sat RUNNING for over an hour
+    with zero output and no crash before anyone could tell something was
+    actually stuck. This turns a silent hang into a clear, loud failure that
+    shows up in the kernel's logs once it exits."""
+    old_handler = signal.signal(signal.SIGALRM, _timeout_handler)
+    signal.alarm(seconds)
+    try:
+        return fn(*args, **kwargs)
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, old_handler)
+
+
 def load_cogvideox():
-    print(f"Loading {COGVIDEOX_MODEL_ID}...")
-    pipe = CogVideoXPipeline.from_pretrained(COGVIDEOX_MODEL_ID, torch_dtype=torch.float16)
+    print(f"Loading {COGVIDEOX_MODEL_ID}...", flush=True)
+    # 10-minute hard deadline: a slow/throttled HuggingFace download (this
+    # script sends unauthenticated requests -- no HF_TOKEN set) has caused
+    # silent multi-hour hangs here before. A real load finishes in a couple
+    # of minutes, so 600s is already a generous margin, not a tight cutoff.
+    pipe = with_timeout(
+        600, CogVideoXPipeline.from_pretrained, COGVIDEOX_MODEL_ID, torch_dtype=torch.float16
+    )
+    print("Model weights loaded.", flush=True)
     # Known mitigation for CogVideoX-2b producing blank/white output on
     # T4-class GPUs: fp16 VAE decode overflows to NaN/white. Keeping the VAE
     # in float32 while the transformer stays fp16 avoids it.
@@ -381,6 +414,7 @@ def main():
     failed = 0
     blanked = 0
     uncolored = 0
+    timed_out = 0
     start = time.time()
 
     for i, (category, base_prompt) in enumerate(queue):
@@ -400,17 +434,33 @@ def main():
             for attempt in range(1, MAX_RETRIES_PER_PROMPT + 2):
                 seed = random.randint(0, 2**31 - 1)
                 generator = torch.Generator(device="cuda").manual_seed(seed)
-                candidate = pipe(
-                    prompt=prompt,
-                    negative_prompt=NEGATIVE_PROMPT,
-                    num_frames=NUM_FRAMES,
-                    height=HEIGHT,
-                    width=WIDTH,
-                    num_inference_steps=NUM_INFERENCE_STEPS,
-                    guidance_scale=GUIDANCE_SCALE,
-                    output_type="pil",
-                    generator=generator,
-                ).frames[0]
+
+                def _generate():
+                    return pipe(
+                        prompt=prompt,
+                        negative_prompt=NEGATIVE_PROMPT,
+                        num_frames=NUM_FRAMES,
+                        height=HEIGHT,
+                        width=WIDTH,
+                        num_inference_steps=NUM_INFERENCE_STEPS,
+                        guidance_scale=GUIDANCE_SCALE,
+                        output_type="pil",
+                        generator=generator,
+                    ).frames[0]
+
+                try:
+                    # 15-minute hard deadline per attempt: a normal generation
+                    # takes ~10 min at 30 steps, so this only fires on a real
+                    # hang (the failure mode that previously caused multi-hour
+                    # silent stalls with no crash and no visible progress).
+                    candidate = with_timeout(900, _generate)
+                except StepTimeout:
+                    reject_reason = "timed out (>15min, likely a stuck/hung call)"
+                    timed_out += 1
+                    more_left = attempt <= MAX_RETRIES_PER_PROMPT
+                    print(f"  attempt {attempt} {reject_reason}, "
+                          f"{'retrying...' if more_left else 'giving up on this prompt.'}", flush=True)
+                    continue
 
                 if frame_looks_blank(candidate):
                     reject_reason = "blank"
@@ -423,11 +473,13 @@ def main():
 
                 more_left = attempt <= MAX_RETRIES_PER_PROMPT
                 print(f"  attempt {attempt} rejected ({reject_reason}, seed={seed}), "
-                      f"{'retrying...' if more_left else 'giving up on this prompt.'}")
+                      f"{'retrying...' if more_left else 'giving up on this prompt.'}", flush=True)
 
             if frames is None:
                 if reject_reason == "blank":
                     blanked += 1
+                elif reject_reason and reject_reason.startswith("timed out"):
+                    pass  # already counted in the except block above
                 else:
                     uncolored += 1
                 continue
@@ -449,7 +501,8 @@ def main():
     total_min = (time.time() - start) / 60
     print(
         f"\n=== DONE: {done} uploaded, {blanked} blanked (skipped), "
-        f"{uncolored} uncolored/sketch (skipped, never uploaded), {failed} failed, "
+        f"{uncolored} uncolored/sketch (skipped, never uploaded), "
+        f"{timed_out} timed out (>15min hangs), {failed} failed, "
         f"{total_min:.1f} min elapsed ==="
     )
 
