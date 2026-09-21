@@ -41,7 +41,19 @@ def main():
         shutil.rmtree(STAGING_DIR)
     STAGING_DIR.mkdir()
 
-    shutil.copy(ENTRYPOINT_SRC, STAGING_DIR / "kaggle_entrypoint.py")
+    entrypoint_code = ENTRYPOINT_SRC.read_text()
+    hf_token = os.environ.get("HF_TOKEN")
+    if hf_token:
+        # Injected only into the staged copy (this whole directory is
+        # gitignored and rebuilt fresh on every push) -- never written into
+        # the tracked source file in scripts/. Authenticated HF requests
+        # avoid the download throttling unauthenticated requests were
+        # hitting after repeated same-day restarts.
+        entrypoint_code = f'import os as _os; _os.environ["HF_TOKEN"] = {hf_token!r}\n' + entrypoint_code
+        print("HF_TOKEN found in .env -- injecting into the staged kernel for faster/authenticated downloads.")
+    else:
+        print("No HF_TOKEN in .env -- proceeding with unauthenticated (slower, rate-limited) HF downloads.")
+    (STAGING_DIR / "kaggle_entrypoint.py").write_text(entrypoint_code)
 
     kernel_metadata = {
         "id": kernel_slug,
