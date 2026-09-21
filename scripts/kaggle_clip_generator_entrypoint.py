@@ -1,10 +1,16 @@
 #!/usr/bin/env python3
 """
-Runs INSIDE a Kaggle GPU kernel. Generates short anime-style clips with the
-base CogVideoX-2B text-to-video model (the same model this project trains a
-LoRA on) and uploads each one straight to the VoidVideo Vault site
+Runs INSIDE a Kaggle GPU kernel. Generates short anime-style clips and
+uploads each one straight to the VoidVideo Vault site
 (voidvideo-vault.vercel.app) as it finishes, tagged with the category the
 prompt was written for and captioned from that same prompt.
+
+Tries Wan2.2-TI2V-5B first (user-requested, generally better quality than
+CogVideoX-2b) and falls back automatically to CogVideoX-2b -- the model
+this project actually trains a LoRA on, already verified working on
+Kaggle's free GPU -- if Wan2.2 doesn't fit in Kaggle's free-tier VRAM or
+fails its smoke test. Never spends real generation time on a pipeline that
+hasn't been confirmed to actually produce a non-blank frame first.
 
 Uploads happen one clip at a time as soon as each is generated, so a kernel
 that gets cut off by Kaggle's session time limit still keeps everything
@@ -12,9 +18,9 @@ generated up to that point -- nothing is lost by stopping early.
 
 This is a stopgap for padding out under-filled categories when real footage
 is running low on time, not a replacement for real hand-drawn reference
-clips: CogVideoX-2b here is the un-tuned base model, so output quality and
-anime-style adherence will be inconsistent. Treat generated clips as filler,
-review them before training on them if you can.
+clips: whichever base model ends up running here is un-tuned on this
+project's art style, so output quality and anime-style adherence will be
+inconsistent. Treat generated clips as filler, review them if you can.
 
 Pushed to Kaggle by scripts/push_clip_generator_to_kaggle.py.
 """
@@ -28,8 +34,8 @@ from pathlib import Path
 def pip_install():
     subprocess.run(
         [
-            sys.executable, "-m", "pip", "install", "-q",
-            "diffusers>=0.30.0", "transformers>=4.44", "accelerate>=0.33",
+            sys.executable, "-m", "pip", "install", "-q", "-U",
+            "diffusers>=0.35.0", "transformers>=4.44", "accelerate>=0.33",
             "imageio[ffmpeg]", "sentencepiece", "requests",
         ],
         check=True,
@@ -45,7 +51,8 @@ from diffusers import CogVideoXPipeline  # noqa: E402
 from diffusers.utils import export_to_video  # noqa: E402
 
 SITE = "https://voidvideo-vault.vercel.app"
-MODEL_ID = "THUDM/CogVideoX-2b"
+WAN_MODEL_ID = "Wan-AI/Wan2.2-TI2V-5B-Diffusers"
+COGVIDEOX_MODEL_ID = "THUDM/CogVideoX-2b"
 NUM_FRAMES = 49  # matches configs/training_config.yaml (t2v) exactly
 FPS = 8
 HEIGHT = 480
@@ -177,9 +184,9 @@ def frame_looks_blank(frames) -> bool:
     return False
 
 
-def main():
-    print(f"Loading {MODEL_ID} (this can take a few minutes on first run)...")
-    pipe = CogVideoXPipeline.from_pretrained(MODEL_ID, torch_dtype=torch.float16)
+def load_cogvideox():
+    print(f"Loading {COGVIDEOX_MODEL_ID}...")
+    pipe = CogVideoXPipeline.from_pretrained(COGVIDEOX_MODEL_ID, torch_dtype=torch.float16)
     # Known mitigation for CogVideoX-2b producing blank/white output on
     # T4-class GPUs: fp16 VAE decode overflows to NaN/white. Keeping the VAE
     # in float32 while the transformer stays fp16 avoids it.
@@ -187,6 +194,51 @@ def main():
     pipe.enable_model_cpu_offload()
     pipe.vae.enable_slicing()
     pipe.vae.enable_tiling()
+    return pipe
+
+
+def load_pipeline():
+    """User asked for Wan2.2 specifically (better quality than CogVideoX-2b).
+    Its own docs cite 27GB+ VRAM at native 720p -- more than Kaggle's free
+    16GB T4/P100 -- so try it with every memory optimization available and
+    PROVE it actually works with a cheap smoke-test generation before
+    committing the real run to it. Fall back to CogVideoX-2b (already
+    verified working on this hardware) the moment anything about Wan2.2
+    fails, rather than burning quota discovering that mid-run."""
+    try:
+        from diffusers import AutoencoderKLWan, WanPipeline
+
+        print(f"Attempting {WAN_MODEL_ID} (requested model, better quality if it fits)...")
+        vae = AutoencoderKLWan.from_pretrained(WAN_MODEL_ID, subfolder="vae", torch_dtype=torch.float32)
+        pipe = WanPipeline.from_pretrained(WAN_MODEL_ID, vae=vae, torch_dtype=torch.bfloat16)
+        pipe.enable_model_cpu_offload()
+        try:
+            pipe.vae.enable_slicing()
+            pipe.vae.enable_tiling()
+        except AttributeError:
+            pass
+
+        print("  smoke-testing Wan2.2 with a tiny cheap generation...")
+        test_frames = pipe(
+            prompt="a hand-drawn anime character standing still, traditional 2D animation",
+            height=HEIGHT, width=WIDTH, num_frames=9, num_inference_steps=4,
+            guidance_scale=GUIDANCE_SCALE, output_type="pil",
+            generator=torch.Generator(device="cuda").manual_seed(0),
+        ).frames[0]
+        if frame_looks_blank(test_frames):
+            raise RuntimeError("smoke test produced a blank frame")
+
+        print("Wan2.2 loaded and smoke-tested OK -- using it for the real run.")
+        return pipe, "wan2.2"
+    except Exception as e:
+        print(f"Wan2.2 didn't work here ({e}). Falling back to CogVideoX-2b.")
+        torch.cuda.empty_cache()
+        return load_cogvideox(), "cogvideox-2b"
+
+
+def main():
+    pipe, model_name = load_pipeline()
+    print(f"Generating with: {model_name}")
 
     queue = build_queue()
     print(f"Queue built: {len(queue)} clips planned across {len(PROMPTS)} categories")
@@ -219,6 +271,7 @@ def main():
                     width=WIDTH,
                     num_inference_steps=NUM_INFERENCE_STEPS,
                     guidance_scale=GUIDANCE_SCALE,
+                    output_type="pil",
                     generator=generator,
                 ).frames[0]
 
