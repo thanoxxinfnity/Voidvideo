@@ -51,7 +51,7 @@ HEIGHT = 480
 WIDTH = 720
 NUM_INFERENCE_STEPS = 30
 GUIDANCE_SCALE = 6.0
-MAX_SECONDS = 11.5 * 3600  # stay inside Kaggle's ~12h GPU session limit
+MAX_SECONDS = 5.5 * 3600  # user needs quota left over for the real LoRA training run today
 
 OUT_DIR = Path("/kaggle/working/generated")
 OUT_DIR.mkdir(parents=True, exist_ok=True)
