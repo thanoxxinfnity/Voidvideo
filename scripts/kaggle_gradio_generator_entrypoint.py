@@ -44,7 +44,11 @@ from diffusers.utils import export_to_video  # noqa: E402
 import gradio as gr  # noqa: E402
 
 COGVIDEOX_MODEL_ID = "THUDM/CogVideoX-2b"
-NUM_FRAMES = 49  # matches configs/training_config.yaml (t2v) exactly
+# Cut from 49 (the training config's frame count) after three straight OOM
+# crashes on this 14.5GB T4 -- fewer frames means less resident at once
+# throughout the whole pipeline, not just in the attention op. ~3.1s clips
+# at this fps instead of ~6.1s; shorter but actually generates.
+NUM_FRAMES = 25
 FPS = 8
 # Reduced from 480x720: the real OOM wasn't about model weight dtype at all
 # (bf16 correctly halved weight memory to ~6GB) -- it was CogVideoX's
@@ -224,7 +228,14 @@ print(f"Loading {COGVIDEOX_MODEL_ID}...", flush=True)
 # native bf16 tensor cores so this may compute a bit slower than fp16, but
 # that's a fine tradeoff for actually fitting and not crashing.
 pipe = CogVideoXPipeline.from_pretrained(COGVIDEOX_MODEL_ID, torch_dtype=torch.bfloat16)
-pipe.enable_model_cpu_offload()
+# enable_model_cpu_offload() moves whole components (transformer/VAE/text
+# encoder) to GPU as a unit and was leaving more resident than expected --
+# baseline "memory in use" grew from ~5GB to ~10.7GB between otherwise
+# identical runs at the same point in the pipeline. enable_sequential_cpu_offload()
+# moves individual layers on and off GPU one at a time instead, which is
+# much slower but keeps peak GPU memory far lower -- the right tradeoff
+# after three straight OOM crashes on this 14.5GB card.
+pipe.enable_sequential_cpu_offload()
 pipe.vae.enable_slicing()
 pipe.vae.enable_tiling()
 try:
