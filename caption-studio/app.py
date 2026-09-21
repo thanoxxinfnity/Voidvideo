@@ -134,8 +134,15 @@ def caption_via_hf(frames_b64):
 
 
 def handle_upload(files, records, progress=gr.Progress()):
+    """A generator, not a plain return -- Gradio streams each `yield` straight
+    to the UI. With 12+ clips, captioning one-by-one via the HF API can take
+    minutes total; returning only once at the very end meant NOTHING showed
+    up on screen until all of them finished, which looked exactly like
+    nothing was happening. Yielding after every clip makes each video+caption
+    appear the moment it's ready, so upload progress is always visible."""
     if not files:
-        return records, "No files selected."
+        yield records, "No files selected."
+        return
 
     records = list(records)
     idx = next_clip_index()
@@ -145,6 +152,7 @@ def handle_upload(files, records, progress=gr.Progress()):
     for i, f in enumerate(files):
         src_path = Path(getattr(f, "name", f))
         progress(i / total, desc=f"Captioning {i + 1}/{total}: {src_path.name}")
+        yield records, f"⏳ Uploading {i + 1}/{total}: {src_path.name}…"
 
         clip_stem = f"clip_{idx:03d}"
         dest_video = VIDEOS_DIR / f"{clip_stem}.mp4"
@@ -165,11 +173,13 @@ def handle_upload(files, records, progress=gr.Progress()):
         records.append({"filename": f"{clip_stem}.mp4", "path": str(dest_video), "caption": caption})
         idx += 1
 
+        yield records, f"✅ {i + 1}/{total} done: {clip_stem}.mp4 uploaded and captioned."
+
     progress(1.0, desc="Done")
-    status = f"✅ Uploaded and captioned {total} clip(s)."
+    status = f"✅ All {total} clip(s) uploaded and captioned."
     if failures:
         status += "\n\n⚠️ AI captioning failed for:\n" + "\n".join(f"- {m}" for m in failures)
-    return records, status
+    yield records, status
 
 
 def make_caption_saver(filename):
