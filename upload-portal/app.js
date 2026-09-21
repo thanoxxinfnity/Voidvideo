@@ -71,7 +71,34 @@ function guessCategory(filename) {
 
 // Grabs one downscaled JPEG frame from the middle of the clip and returns it
 // as base64 (no "data:" prefix), small enough to send to a vision model.
-function extractFrameBase64(file) {
+// The vision model available to us only accepts ONE image per request (Llama
+// 3.2 Vision hard-rejects more), so a single video frame can't show motion at
+// all -- which is exactly what tells locomotion/gestures/expressions/
+// secondary-motion apart. Instead we sample several frames spread across the
+// whole clip and tile them into one contact-sheet image, in time order, so
+// the model can actually see how things change across the clip, not just one
+// instant of it.
+const GRID_COLS = 3;
+const GRID_ROWS = 2;
+const GRID_FRAME_COUNT = GRID_COLS * GRID_ROWS;
+const GRID_CELL_W = 220;
+const GRID_CELL_H = 124;
+
+function seekVideo(video, time) {
+  return new Promise((resolve, reject) => {
+    const onSeeked = () => { cleanup(); resolve(); };
+    const onError = () => { cleanup(); reject(new Error("seek failed")); };
+    function cleanup() {
+      video.removeEventListener("seeked", onSeeked);
+      video.removeEventListener("error", onError);
+    }
+    video.addEventListener("seeked", onSeeked, { once: true });
+    video.addEventListener("error", onError, { once: true });
+    video.currentTime = time;
+  });
+}
+
+function extractFrameGridBase64(file) {
   return new Promise((resolve, reject) => {
     const video = document.createElement("video");
     video.muted = true;
@@ -79,31 +106,44 @@ function extractFrameBase64(file) {
     video.preload = "auto";
     const url = URL.createObjectURL(file);
     video.src = url;
-
     const cleanup = () => URL.revokeObjectURL(url);
     const fail = (err) => { cleanup(); reject(err); };
 
-    video.addEventListener("loadedmetadata", () => {
-      const mid = (video.duration || 0) / 2;
-      video.currentTime = isFinite(mid) && mid > 0 ? mid : 0;
-    });
-
-    video.addEventListener("seeked", () => {
+    video.addEventListener("loadedmetadata", async () => {
       try {
-        const w = video.videoWidth || 384;
-        const h = video.videoHeight || 216;
-        const scale = Math.min(1, 384 / w);
+        const duration = video.duration;
+        // Most real clips have proper duration metadata and are long enough
+        // to sample a full grid from; a handful of frames spread across the
+        // whole clip is what actually shows motion, not just a snapshot.
+        const useGrid = isFinite(duration) && duration >= 0.6;
+        const frameCount = useGrid ? GRID_FRAME_COUNT : 1;
+        const cols = useGrid ? GRID_COLS : 1;
+        const rows = useGrid ? GRID_ROWS : 1;
+        const cellW = useGrid ? GRID_CELL_W : 384;
+        const cellH = useGrid ? GRID_CELL_H : 216;
+        const points = useGrid
+          ? Array.from({ length: frameCount }, (_, i) => (duration * (i + 0.5)) / frameCount)
+          : [isFinite(duration) && duration > 0 ? duration / 2 : 0];
+
         const canvas = document.createElement("canvas");
-        canvas.width = Math.max(1, Math.round(w * scale));
-        canvas.height = Math.max(1, Math.round(h * scale));
-        canvas.getContext("2d").drawImage(video, 0, 0, canvas.width, canvas.height);
-        const dataUrl = canvas.toDataURL("image/jpeg", 0.6);
+        canvas.width = cellW * cols;
+        canvas.height = cellH * rows;
+        const ctx = canvas.getContext("2d");
+
+        for (let i = 0; i < points.length; i++) {
+          await seekVideo(video, points[i]);
+          const col = i % cols;
+          const row = Math.floor(i / cols);
+          ctx.drawImage(video, col * cellW, row * cellH, cellW, cellH);
+        }
+
+        const dataUrl = canvas.toDataURL("image/jpeg", 0.65);
         cleanup();
         resolve(dataUrl.split(",")[1]);
       } catch (err) {
         fail(err);
       }
-    });
+    }, { once: true });
 
     video.addEventListener("error", () => fail(new Error("Could not read video frame")));
     video.load();
@@ -111,7 +151,7 @@ function extractFrameBase64(file) {
 }
 
 async function classifyWithVision(file) {
-  const imageBase64 = await extractFrameBase64(file);
+  const imageBase64 = await extractFrameGridBase64(file);
   const res = await fetch("/api/classify", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -299,10 +339,10 @@ function buildAutoPanelHTML() {
       <span class="count-badge">Auto category-detect</span>
     </div>
     <p class="panel-desc">
-      Sirf videos yahan daal do — ek AI vision model video ka frame dekh ke category khud
-      guess kar lega (🤖 AI-detected) aur turant apni jagah upload bhi kar dega, tumhe kuch click
-      nahi karna. Agar AI confused ho (⚠️) ya category nahi mili, tabhi dropdown se khud chunna
-      padega — chunte hi wo bhi turant upload ho jayega.
+      Sirf videos yahan daal do — AI ek nahi, pure clip mein se 6 frames dekh ke (poora motion samajh
+      ke) category guess karta hai (🤖 AI-detected) aur turant apni jagah upload bhi kar dega, tumhe
+      kuch click nahi karna. Agar AI confused ho (⚠️) ya category nahi mili, tabhi dropdown se khud
+      chunna padega — chunte hi wo bhi turant upload ho jayega.
     </p>
     <div class="dropzone" id="dropzone-auto">
       <div class="dropzone-icon">🎬</div>

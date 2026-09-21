@@ -1,5 +1,13 @@
-// Netlify Function: classifies a single video frame into one of the 4 clip
-// categories using an NVIDIA NIM vision-language model, server-side only.
+// Netlify Function: classifies a video into one of the 4 clip categories
+// using an NVIDIA NIM vision-language model, server-side only.
+//
+// The model available to this account (meta/llama-3.2-11b-vision-instruct)
+// hard-rejects more than one image per request, so a single static frame
+// can't carry any motion information -- and motion is exactly what tells
+// these categories apart. The client works around this by tiling several
+// frames sampled across the whole clip into one contact-sheet image (see
+// extractFrameGridBase64 in app.js), so this is judging the clip's motion
+// over time, not one instant of it.
 const ALLOWED_TAGS = ["locomotion", "gestures", "expressions", "secondary-motion"];
 
 const PROMPT = `You are sorting short reference video clips for an animation dataset into exactly one of these 4 categories:
@@ -9,7 +17,7 @@ const PROMPT = `You are sorting short reference video clips for an animation dat
 - expressions: close-up facial expressions -- blinking, smiling, frowning, surprise, talking, anger
 - secondary-motion: passive ambient motion with no deliberate human action -- hair swaying, cloth/fabric moving, leaves falling, water rippling, a curtain moving
 
-Look at this single frame from the middle of the clip and pick the single best-matching category.
+This image is a contact sheet of several frames sampled evenly across a single short video clip, arranged in time order left-to-right, then top-to-bottom (so it reads like a timeline, not separate images). Judge the motion and change you can see ACROSS the frames -- not just what one cell shows -- and pick the single best-matching category for the whole clip.
 Reply with ONLY one lowercase word, exactly one of: locomotion, gestures, expressions, secondary-motion, unsure
 No punctuation, no explanation, no other text.`;
 
