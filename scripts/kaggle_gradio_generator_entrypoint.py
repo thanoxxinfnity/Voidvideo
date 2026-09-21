@@ -46,8 +46,13 @@ import gradio as gr  # noqa: E402
 COGVIDEOX_MODEL_ID = "THUDM/CogVideoX-2b"
 NUM_FRAMES = 49  # matches configs/training_config.yaml (t2v) exactly
 FPS = 8
-HEIGHT = 480
-WIDTH = 720
+# Reduced from 480x720: the real OOM wasn't about model weight dtype at all
+# (bf16 correctly halved weight memory to ~6GB) -- it was CogVideoX's
+# spatio-temporal attention trying to allocate a single 70GB tensor, which
+# scales with total tokens (frames x spatial patches) and has nothing to do
+# with dtype. Smaller resolution directly shrinks that token count.
+HEIGHT = 320
+WIDTH = 480
 
 STYLE_SUFFIX = (
     ", modern 2D anime film style, fully colored with natural cel shading and "
@@ -222,6 +227,13 @@ pipe = CogVideoXPipeline.from_pretrained(COGVIDEOX_MODEL_ID, torch_dtype=torch.b
 pipe.enable_model_cpu_offload()
 pipe.vae.enable_slicing()
 pipe.vae.enable_tiling()
+try:
+    # Directly targets the attention memory spike (a single 70GB alloc
+    # attempt was observed) by processing attention in chunks instead of
+    # materializing the full attention matrix at once.
+    pipe.enable_attention_slicing()
+except AttributeError:
+    pass
 print("Model loaded. Launching Gradio...", flush=True)
 
 

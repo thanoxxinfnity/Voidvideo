@@ -65,8 +65,13 @@ SITE = "https://voidvideo-vault.vercel.app"
 COGVIDEOX_MODEL_ID = "THUDM/CogVideoX-2b"
 NUM_FRAMES = 49  # matches configs/training_config.yaml (t2v) exactly
 FPS = 8
-HEIGHT = 480
-WIDTH = 720
+# Reduced from 480x720: the real OOM wasn't about model weight dtype at all
+# (bf16 correctly halved weight memory to ~6GB) -- it was CogVideoX's
+# spatio-temporal attention trying to allocate a single 70GB tensor, which
+# scales with total tokens (frames x spatial patches) and has nothing to do
+# with dtype. Smaller resolution directly shrinks that token count.
+HEIGHT = 320
+WIDTH = 480
 NUM_INFERENCE_STEPS = 30  # reverted from 40: at 4 attempts/prompt worst case, 40 steps meant
 # up to ~60 real minutes stuck on one hard prompt with zero visible progress or way to check
 # in (Kaggle gives no live logs for a running kernel). 30 is the config already verified
@@ -397,6 +402,13 @@ def load_cogvideox():
     pipe.enable_model_cpu_offload()
     pipe.vae.enable_slicing()
     pipe.vae.enable_tiling()
+    try:
+        # Directly targets the attention memory spike (a single 70GB alloc
+        # attempt was observed) by processing attention in chunks instead of
+        # materializing the full attention matrix at once.
+        pipe.enable_attention_slicing()
+    except AttributeError:
+        pass
     return pipe
 
 
