@@ -16,6 +16,16 @@ Uploads happen one clip at a time as soon as each is generated, so a kernel
 that gets cut off by Kaggle's session time limit still keeps everything
 generated up to that point -- nothing is lost by stopping early.
 
+Two quality gates run before anything is allowed to upload, and a clip that
+fails either one is re-rolled with a new seed (a few times) and then dropped
+entirely rather than ever reaching the site:
+  1. frame_looks_blank() -- catches solid white/gray garbage frames.
+  2. frame_looks_uncolored() -- catches real-but-uncolored sketch/lineart
+     output. This one is a hard, non-negotiable requirement: an uncolored
+     clip must never be uploaded, even if everything else about it is fine.
+Quality now takes priority over wall-clock time (MAX_SECONDS is a generous
+backstop against a stuck session, not a race to finish fast).
+
 This is a stopgap for padding out under-filled categories when real footage
 is running low on time, not a replacement for real hand-drawn reference
 clips: whichever base model ends up running here is un-tuned on this
@@ -57,10 +67,15 @@ NUM_FRAMES = 49  # matches configs/training_config.yaml (t2v) exactly
 FPS = 8
 HEIGHT = 480
 WIDTH = 720
-NUM_INFERENCE_STEPS = 30
+NUM_INFERENCE_STEPS = 40  # bumped from 30 -- user wants quality over speed now
 GUIDANCE_SCALE = 6.0
-MAX_RETRIES_PER_PROMPT = 2  # re-roll with a new seed if output looks blank
-MAX_SECONDS = 5.5 * 3600  # user needs quota left over for the real LoRA training run today
+MAX_RETRIES_PER_PROMPT = 3  # re-roll with a new seed if output looks blank OR uncolored
+# User's stance shifted from "hard 5-6h cap no matter what" to "take the time you
+# need for real quality, just don't burn the whole day for nothing" -- so this is
+# now a backstop against an actually-stuck/runaway session, not the primary
+# quality control (the blank/color gates below are). Kaggle free GPU sessions cap
+# out around 9h on their own anyway, so 8h leaves a safety margin under that.
+MAX_SECONDS = 8 * 3600
 
 OUT_DIR = Path("/kaggle/working/generated")
 OUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -113,16 +128,17 @@ PROMPTS = {
         "a hand-drawn anime girl smirking confidently before a fight in a close-up shot",
         "a hand-drawn anime character screaming in battle fury in a close-up shot",
     ],
-    # A character is kept visible in every one of these (per user request) --
-    # the ambient element is still the point of the shot, the character is
-    # just present in frame rather than the clip being empty of people.
+    # A character-less ambient scene is fine here as long as the anime style/
+    # coloring is good (user explicitly walked back the earlier "character in
+    # every clip" rule) -- mix of character-present and character-less shots.
     "secondary-motion": [
-        "a hand-drawn anime girl standing quietly as autumn leaves fall gently around her along a forest path",
+        "hand-drawn anime autumn leaves falling gently along a quiet forest path, no characters in frame",
         "a hand-drawn anime girl's long hair swaying gently in the wind, her face visible in frame",
-        "a hand-drawn anime character standing by an open window as the curtains flutter beside them",
-        "a hand-drawn anime character sitting by a calm pond as the water ripples gently near them",
+        "hand-drawn anime curtains fluttering gently by an open window in a sunlit empty room, no characters in frame",
+        "hand-drawn anime water rippling gently across a calm pond reflecting the sky, no characters in frame",
         "a hand-drawn anime character's coat and scarf blowing in a strong wind as they stand still",
-        "a hand-drawn anime character standing amid sparks and embers flying from a nearby sword fight",
+        "hand-drawn anime sparks and embers flying through the air from a distant bonfire at night, no characters in frame",
+        "hand-drawn anime dust and debris swirling through a beam of sunlight in an empty room, no characters in frame",
         "a hand-drawn anime character standing as dust and debris swirl around them from a powerful impact",
     ],
 }
@@ -184,6 +200,31 @@ def frame_looks_blank(frames) -> bool:
     return False
 
 
+# User's hard requirement: "AI colors hona chahiye hi chahiye, nahi hoga toh
+# video upload nahi hoga" -- an uncolored/sketch-only clip must NEVER reach the
+# site, full stop. frame_looks_blank() alone does not catch this: flat gray
+# lineart on white paper has plenty of pixel variance (so it passes the blank
+# check) while still having almost no actual color in it.
+UNCOLORED_SATURATION_THRESHOLD = 18.0  # 0-255 scale; real colored anime frames sit far above this
+
+
+def frame_looks_uncolored(frames) -> bool:
+    """Reject grayscale/sketch-only output by checking HSV-style saturation
+    (max(R,G,B) - min(R,G,B)) averaged over several sample frames and pixels.
+    A true black-and-white/pencil-sketch frame has near-zero saturation
+    everywhere even though it is not blank."""
+    sample_idxs = sorted({0, len(frames) // 4, len(frames) // 2, (3 * len(frames)) // 4, len(frames) - 1})
+    frame_sats = []
+    for idx in sample_idxs:
+        arr = np.asarray(frames[idx], dtype=np.float32)
+        cmax = arr.max(axis=-1)
+        cmin = arr.min(axis=-1)
+        saturation = np.where(cmax > 1.0, (cmax - cmin) / cmax * 255.0, 0.0)
+        frame_sats.append(float(saturation.mean()))
+    avg_saturation = sum(frame_sats) / len(frame_sats)
+    return avg_saturation < UNCOLORED_SATURATION_THRESHOLD
+
+
 def load_cogvideox():
     print(f"Loading {COGVIDEOX_MODEL_ID}...")
     pipe = CogVideoXPipeline.from_pretrained(COGVIDEOX_MODEL_ID, torch_dtype=torch.float16)
@@ -227,6 +268,10 @@ def load_pipeline():
         ).frames[0]
         if frame_looks_blank(test_frames):
             raise RuntimeError("smoke test produced a blank frame")
+        # Not checking frame_looks_uncolored() here on purpose: this smoke test
+        # only runs 4 inference steps for speed, which is too undercooked to
+        # judge real color quality fairly. The color gate applies per-clip on
+        # the real generation calls below instead, where it matters.
 
         print("Wan2.2 loaded and smoke-tested OK -- using it for the real run.")
         return pipe, "wan2.2"
@@ -246,6 +291,7 @@ def main():
     done = 0
     failed = 0
     blanked = 0
+    uncolored = 0
     start = time.time()
 
     for i, (category, base_prompt) in enumerate(queue):
@@ -261,6 +307,7 @@ def main():
         out_path = OUT_DIR / f"clip_{i:04d}.mp4"
         try:
             frames = None
+            reject_reason = None
             for attempt in range(1, MAX_RETRIES_PER_PROMPT + 2):
                 seed = random.randint(0, 2**31 - 1)
                 generator = torch.Generator(device="cuda").manual_seed(seed)
@@ -275,14 +322,24 @@ def main():
                     generator=generator,
                 ).frames[0]
 
-                if not frame_looks_blank(candidate):
+                if frame_looks_blank(candidate):
+                    reject_reason = "blank"
+                elif frame_looks_uncolored(candidate):
+                    # Hard mandatory gate -- never upload uncolored/sketch output.
+                    reject_reason = "uncolored/sketch (no real color)"
+                else:
                     frames = candidate
                     break
-                print(f"  attempt {attempt} came out blank (seed={seed}), retrying..." if attempt <= MAX_RETRIES_PER_PROMPT
-                      else f"  attempt {attempt} came out blank (seed={seed}), giving up on this prompt.")
+
+                more_left = attempt <= MAX_RETRIES_PER_PROMPT
+                print(f"  attempt {attempt} rejected ({reject_reason}, seed={seed}), "
+                      f"{'retrying...' if more_left else 'giving up on this prompt.'}")
 
             if frames is None:
-                blanked += 1
+                if reject_reason == "blank":
+                    blanked += 1
+                else:
+                    uncolored += 1
                 continue
 
             export_to_video(frames, str(out_path), fps=FPS)
@@ -300,7 +357,11 @@ def main():
             torch.cuda.empty_cache()
 
     total_min = (time.time() - start) / 60
-    print(f"\n=== DONE: {done} uploaded, {blanked} blanked (skipped), {failed} failed, {total_min:.1f} min elapsed ===")
+    print(
+        f"\n=== DONE: {done} uploaded, {blanked} blanked (skipped), "
+        f"{uncolored} uncolored/sketch (skipped, never uploaded), {failed} failed, "
+        f"{total_min:.1f} min elapsed ==="
+    )
 
 
 if __name__ == "__main__":
