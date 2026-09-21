@@ -1,4 +1,4 @@
-# VoidVideo Clip Upload Portal
+# VoidVideo Vault — Clip Upload Portal
 
 A tiny static website + serverless functions for collecting VoidVideo
 training clips, organized by motion/expression category, with per-clip delete
@@ -49,18 +49,28 @@ cd upload-portal
 npm i -g netlify-cli
 netlify login
 netlify init          # choose "Create & configure a new site"
+                       # when it asks for a site name, try: voidvideo-vault
+                       # (if taken, Netlify will tell you -- pick any variant)
 netlify env:set CLOUDINARY_CLOUD_NAME <your_cloud_name>
 netlify env:set CLOUDINARY_API_KEY <your_api_key>
 netlify env:set CLOUDINARY_API_SECRET <your_api_secret>
 netlify deploy --prod
 ```
 
-Either way you get a live URL back in the terminal.
+Either way you get a live URL back in the terminal — with the suggested name
+that'll be `https://voidvideo-vault.netlify.app` (or whatever variant you pick).
+
+**Security note specific to Netlify's manual `deploy` command**: it uploads
+your *local folder* as-is (not what's committed to git), so a stray `.env`
+sitting in this folder would otherwise get published as a public static file.
+`.netlifyignore` in this folder already excludes `.env`, `.env.local`, and a
+few other dev-only files from that upload — don't remove it.
 
 ## Local testing (optional)
 
 A `.env` with real Cloudinary values already exists locally in this folder
-for local dev (gitignored, never committed). To test:
+for local dev (gitignored, never committed, and excluded from deploys via
+`.netlifyignore`). To test:
 
 ```bash
 cd upload-portal

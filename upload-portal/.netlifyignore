@@ -1,0 +1,11 @@
+# netlify deploy bundles straight from local disk (not from git), so secrets
+# and dev-only files must be excluded here explicitly -- .gitignore alone
+# does NOT protect a manual `netlify deploy` from uploading these as public
+# static files under the "." publish directory.
+.env
+.env.local
+.env.example
+node_modules
+.git
+.vercel
+README.md
