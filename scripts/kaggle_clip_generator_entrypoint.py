@@ -81,8 +81,13 @@ OUT_DIR = Path("/kaggle/working/generated")
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 STYLE_SUFFIX = (
-    ", traditional 2D hand-drawn anime animation, natural line-art, "
-    "smooth timing, cel shading, consistent character design"
+    ", traditional 2D hand-drawn anime animation, fully colored with vibrant "
+    "flat colors and cel shading, clean inked outlines, colorful background, "
+    "vivid saturated colors, smooth timing, consistent character design"
+)
+NEGATIVE_PROMPT = (
+    "black and white, grayscale, monochrome, sketch, pencil sketch, line art "
+    "only, uncolored, unfinished, storyboard, rough draft"
 )
 
 # Base prompts per category, matching the motion sub-types in data/README.md.
@@ -205,24 +210,35 @@ def frame_looks_blank(frames) -> bool:
 # site, full stop. frame_looks_blank() alone does not catch this: flat gray
 # lineart on white paper has plenty of pixel variance (so it passes the blank
 # check) while still having almost no actual color in it.
-UNCOLORED_SATURATION_THRESHOLD = 18.0  # 0-255 scale; real colored anime frames sit far above this
+UNCOLORED_SATURATION_THRESHOLD = 18.0  # 0-255 scale avg; real colored anime frames sit far above this
+COLORED_PIXEL_SATURATION = 40.0  # a pixel above this is "clearly colored", not just antialiasing noise
+MIN_COLORED_PIXEL_FRACTION = 0.02  # at least 2% of the frame must actually be colored, not just noise
 
 
 def frame_looks_uncolored(frames) -> bool:
-    """Reject grayscale/sketch-only output by checking HSV-style saturation
-    (max(R,G,B) - min(R,G,B)) averaged over several sample frames and pixels.
-    A true black-and-white/pencil-sketch frame has near-zero saturation
-    everywhere even though it is not blank."""
+    """Reject grayscale/sketch-only output. Checks HSV-style saturation
+    (max(R,G,B) - min(R,G,B)) both as a frame average AND as a coverage
+    fraction (percent of pixels that are clearly colored), over several
+    sample frames. Two checks instead of one average alone: a pure
+    black-and-white/pencil-sketch frame has ~0 on both, but relying on the
+    average by itself could be fooled by widespread faint compression/model
+    noise that nudges the mean up without any real colored area existing."""
     sample_idxs = sorted({0, len(frames) // 4, len(frames) // 2, (3 * len(frames)) // 4, len(frames) - 1})
     frame_sats = []
+    frame_colored_fractions = []
     for idx in sample_idxs:
         arr = np.asarray(frames[idx], dtype=np.float32)
         cmax = arr.max(axis=-1)
         cmin = arr.min(axis=-1)
         saturation = np.where(cmax > 1.0, (cmax - cmin) / cmax * 255.0, 0.0)
         frame_sats.append(float(saturation.mean()))
+        frame_colored_fractions.append(float((saturation > COLORED_PIXEL_SATURATION).mean()))
     avg_saturation = sum(frame_sats) / len(frame_sats)
-    return avg_saturation < UNCOLORED_SATURATION_THRESHOLD
+    avg_colored_fraction = sum(frame_colored_fractions) / len(frame_colored_fractions)
+    # AND, not OR: a colored character shot on a plain/white background has a
+    # LOW average (background pixels drag it down) but a healthy colored-pixel
+    # fraction -- that must pass. Only reject when neither signal shows color.
+    return avg_saturation < UNCOLORED_SATURATION_THRESHOLD and avg_colored_fraction < MIN_COLORED_PIXEL_FRACTION
 
 
 def load_cogvideox():
@@ -261,7 +277,8 @@ def load_pipeline():
 
         print("  smoke-testing Wan2.2 with a tiny cheap generation...")
         test_frames = pipe(
-            prompt="a hand-drawn anime character standing still, traditional 2D animation",
+            prompt="a hand-drawn anime character standing still, traditional 2D animation, fully colored, vibrant colors",
+            negative_prompt=NEGATIVE_PROMPT,
             height=HEIGHT, width=WIDTH, num_frames=9, num_inference_steps=4,
             guidance_scale=GUIDANCE_SCALE, output_type="pil",
             generator=torch.Generator(device="cuda").manual_seed(0),
@@ -313,6 +330,7 @@ def main():
                 generator = torch.Generator(device="cuda").manual_seed(seed)
                 candidate = pipe(
                     prompt=prompt,
+                    negative_prompt=NEGATIVE_PROMPT,
                     num_frames=NUM_FRAMES,
                     height=HEIGHT,
                     width=WIDTH,
