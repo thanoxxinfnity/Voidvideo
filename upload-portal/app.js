@@ -245,6 +245,7 @@ async function performUpload(id, item) {
     });
     item.status = "done";
     await loadCategory(item.slug);
+    await loadAllUploads();
   } catch (err) {
     item.status = "error";
     item.errorMsg = err.message;
@@ -358,6 +359,12 @@ function buildAutoPanelHTML() {
         <button id="staging-upload-all" class="btn-primary" type="button">Upload All</button>
       </div>
     </div>
+
+    <div class="panel-header all-uploads-header">
+      <h3>📼 Saari Uploaded Clips <span class="all-uploads-hint">(sab categories, verify karo sahi jagah gayi ya nahi)</span></h3>
+      <button id="refresh-all-uploads" class="btn-secondary" type="button">🔄 Refresh</button>
+    </div>
+    <div id="all-uploads-grid" class="grid"></div>
   `;
 }
 
@@ -390,6 +397,7 @@ function wireAutoDropzone() {
     renderStagingList();
   };
   document.getElementById("staging-upload-all").onclick = uploadAllStaging;
+  document.getElementById("refresh-all-uploads").onclick = loadAllUploads;
 }
 
 function addToStaging(fileList) {
@@ -678,7 +686,7 @@ async function loadCategory(slug) {
   updateOverallProgress();
 }
 
-function renderCard(slug, clip) {
+function renderCard(slug, clip, catLabel) {
   const card = document.createElement("div");
   card.className = "card";
 
@@ -690,6 +698,7 @@ function renderCard(slug, clip) {
     <div class="thumb-wrap">
       <video class="thumb-video" src="${clip.url}#t=0.1" poster="${clip.thumbnailUrl}" muted loop preload="metadata" playsinline></video>
       <div class="play-overlay">▶</div>
+      ${catLabel ? `<span class="cat-badge">${catLabel}</span>` : ""}
       ${duration ? `<span class="duration-badge">${duration}</span>` : ""}
     </div>
     <div class="meta">
@@ -734,9 +743,43 @@ function renderCard(slug, clip) {
       return;
     }
     await loadCategory(slug);
+    await loadAllUploads();
   };
 
   return card;
+}
+
+async function loadAllUploads() {
+  const grid = document.getElementById("all-uploads-grid");
+  if (!grid) return; // Smart Upload tab isn't mounted right now
+
+  grid.innerHTML = `<div class="empty-state">Loading…</div>`;
+  try {
+    const perCategory = await Promise.all(
+      CATEGORIES.map(async (cat) => {
+        const res = await fetch(`/api/list?tag=${encodeURIComponent(cat.slug)}`);
+        const data = await res.json();
+        if (!res.ok) return [];
+        return (data.clips || []).map((clip) => ({
+          clip,
+          slug: cat.slug,
+          catLabel: `${cat.icon} ${cat.label}`,
+        }));
+      })
+    );
+
+    const all = perCategory.flat().sort((a, b) => new Date(b.clip.createdAt) - new Date(a.clip.createdAt));
+
+    if (all.length === 0) {
+      grid.innerHTML = `<div class="empty-state">🎥 Abhi tak koi video upload nahi hui hai.</div>`;
+      return;
+    }
+
+    grid.innerHTML = "";
+    all.forEach(({ clip, slug, catLabel }) => grid.appendChild(renderCard(slug, clip, catLabel)));
+  } catch (err) {
+    grid.innerHTML = `<div class="empty-state">⚠️ Load nahi ho paya: ${err.message}</div>`;
+  }
 }
 
 function updateOverallProgress() {
@@ -752,6 +795,7 @@ function updateOverallProgress() {
 function init() {
   buildTabs();
   CATEGORIES.forEach((cat) => loadCategory(cat.slug));
+  loadAllUploads();
 }
 
 init();

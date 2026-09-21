@@ -122,6 +122,7 @@ main {
 }
 
 .panel-header h2 { margin: 0; font-size: 19px; }
+.panel-header h3 { margin: 0; font-size: 16px; }
 .count-badge {
   color: var(--text);
   background: var(--panel);
@@ -318,6 +319,23 @@ main {
 }
 
 .thumb-wrap:hover .play-overlay { opacity: 1; }
+
+.cat-badge {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  background: rgba(255, 0, 0, 0.85);
+  color: white;
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 3px 7px;
+  border-radius: 999px;
+  letter-spacing: 0.2px;
+  white-space: nowrap;
+}
+
+.all-uploads-header { margin-top: 8px; }
+.all-uploads-hint { font-weight: 400; color: var(--muted); font-size: 12px; }
 
 .duration-badge {
   position: absolute;
