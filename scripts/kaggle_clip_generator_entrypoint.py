@@ -5,12 +5,11 @@ uploads each one straight to the VoidVideo Vault site
 (voidvideo-vault.vercel.app) as it finishes, tagged with the category the
 prompt was written for and captioned from that same prompt.
 
-Tries Wan2.2-TI2V-5B first (user-requested, generally better quality than
-CogVideoX-2b) and falls back automatically to CogVideoX-2b -- the model
-this project actually trains a LoRA on, already verified working on
-Kaggle's free GPU -- if Wan2.2 doesn't fit in Kaggle's free-tier VRAM or
-fails its smoke test. Never spends real generation time on a pipeline that
-hasn't been confirmed to actually produce a non-blank frame first.
+Uses CogVideoX-2b -- the model this project actually trains a LoRA on,
+already verified working end-to-end on Kaggle's free GPU. Wan2.2-TI2V-5B
+was tried and dropped: it survived a cheap smoke test but got OOM-killed
+by the OS during real generation (VAE decode of a full 49-frame clip),
+wasting a full model-load-plus-40-minute cycle for zero output.
 
 Uploads happen one clip at a time as soon as each is generated, so a kernel
 that gets cut off by Kaggle's session time limit still keeps everything
@@ -62,7 +61,6 @@ from diffusers import CogVideoXPipeline  # noqa: E402
 from diffusers.utils import export_to_video  # noqa: E402
 
 SITE = "https://voidvideo-vault.vercel.app"
-WAN_MODEL_ID = "Wan-AI/Wan2.2-TI2V-5B-Diffusers"
 COGVIDEOX_MODEL_ID = "THUDM/CogVideoX-2b"
 NUM_FRAMES = 49  # matches configs/training_config.yaml (t2v) exactly
 FPS = 8
@@ -359,52 +357,18 @@ def load_cogvideox():
     return pipe
 
 
-def load_pipeline():
-    """User asked for Wan2.2 specifically (better quality than CogVideoX-2b).
-    Its own docs cite 27GB+ VRAM at native 720p -- more than Kaggle's free
-    16GB T4/P100 -- so try it with every memory optimization available and
-    PROVE it actually works with a cheap smoke-test generation before
-    committing the real run to it. Fall back to CogVideoX-2b (already
-    verified working on this hardware) the moment anything about Wan2.2
-    fails, rather than burning quota discovering that mid-run."""
-    try:
-        from diffusers import AutoencoderKLWan, WanPipeline
-
-        print(f"Attempting {WAN_MODEL_ID} (requested model, better quality if it fits)...")
-        vae = AutoencoderKLWan.from_pretrained(WAN_MODEL_ID, subfolder="vae", torch_dtype=torch.float32)
-        pipe = WanPipeline.from_pretrained(WAN_MODEL_ID, vae=vae, torch_dtype=torch.bfloat16)
-        pipe.enable_model_cpu_offload()
-        try:
-            pipe.vae.enable_slicing()
-            pipe.vae.enable_tiling()
-        except AttributeError:
-            pass
-
-        print("  smoke-testing Wan2.2 with a tiny cheap generation...")
-        test_frames = pipe(
-            prompt="a hand-drawn anime character standing still, modern 2D anime film style, fully colored with natural cel shading",
-            negative_prompt=NEGATIVE_PROMPT,
-            height=HEIGHT, width=WIDTH, num_frames=9, num_inference_steps=4,
-            guidance_scale=GUIDANCE_SCALE, output_type="pil",
-            generator=torch.Generator(device="cuda").manual_seed(0),
-        ).frames[0]
-        if frame_looks_blank(test_frames):
-            raise RuntimeError("smoke test produced a blank frame")
-        # Not checking frame_looks_uncolored() here on purpose: this smoke test
-        # only runs 4 inference steps for speed, which is too undercooked to
-        # judge real color quality fairly. The color gate applies per-clip on
-        # the real generation calls below instead, where it matters.
-
-        print("Wan2.2 loaded and smoke-tested OK -- using it for the real run.")
-        return pipe, "wan2.2"
-    except Exception as e:
-        print(f"Wan2.2 didn't work here ({e}). Falling back to CogVideoX-2b.")
-        torch.cuda.empty_cache()
-        return load_cogvideox(), "cogvideox-2b"
-
-
 def main():
-    pipe, model_name = load_pipeline()
+    # Wan2.2-TI2V-5B was tried here earlier (user-requested, better quality
+    # than CogVideoX-2b if it fits). It's dropped now: on a real run it got
+    # OOM-killed by the OS ("Killed", not a catchable CUDA exception) right
+    # after the diffusion loop finished, during VAE decode of the full
+    # 49-frame clip -- the cheap 9-frame smoke test didn't stress the decode
+    # step enough to catch this, so it passed while the real generation
+    # silently ate ~40 minutes of quota for zero output. CogVideoX-2b is
+    # also literally this project's actual target base model (see
+    # CLAUDE.md), so there's no quality tradeoff being made by dropping Wan.
+    pipe = load_cogvideox()
+    model_name = "cogvideox-2b"
     print(f"Generating with: {model_name}")
 
     queue = build_queue()
