@@ -81,13 +81,15 @@ OUT_DIR = Path("/kaggle/working/generated")
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 STYLE_SUFFIX = (
-    ", traditional 2D hand-drawn anime animation, fully colored with vibrant "
-    "flat colors and cel shading, clean inked outlines, colorful background, "
-    "vivid saturated colors, smooth timing, consistent character design"
+    ", modern 2D anime film style, fully colored with natural cel shading and "
+    "soft gradient shadows, detailed painted background art, clean inked "
+    "outlines, natural realistic anime color palette, consistent character "
+    "design, smooth cinematic timing"
 )
 NEGATIVE_PROMPT = (
     "black and white, grayscale, monochrome, sketch, pencil sketch, line art "
-    "only, uncolored, unfinished, storyboard, rough draft"
+    "only, uncolored, unfinished, storyboard, rough draft, flat cartoon "
+    "colors, oversaturated, plain empty background"
 )
 
 # Base prompts per category, matching the motion sub-types in data/README.md.
@@ -277,7 +279,7 @@ def load_pipeline():
 
         print("  smoke-testing Wan2.2 with a tiny cheap generation...")
         test_frames = pipe(
-            prompt="a hand-drawn anime character standing still, traditional 2D animation, fully colored, vibrant colors",
+            prompt="a hand-drawn anime character standing still, modern 2D anime film style, fully colored with natural cel shading",
             negative_prompt=NEGATIVE_PROMPT,
             height=HEIGHT, width=WIDTH, num_frames=9, num_inference_steps=4,
             guidance_scale=GUIDANCE_SCALE, output_type="pil",
