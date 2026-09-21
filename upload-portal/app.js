@@ -45,12 +45,15 @@ const CATEGORY_KEYWORDS = {
 const VIDEO_EXT_RE = /\.(mp4|mov|webm|mkv|avi|m4v|3gp|3gpp|wmv|flv|mts|m2ts)$/i;
 
 const CLASSIFY_CONCURRENCY = 2;
+const UPLOAD_CONCURRENCY = 2;
 
 const counts = {};
 const staging = new Map();
 let stagingIdSeq = 0;
 let activeClassifyCount = 0;
 const classifyQueue = [];
+let activeUploadCount = 0;
+const uploadQueueItems = [];
 
 function isVideoFile(file) {
   if (file.type) return file.type.startsWith("video/");
@@ -146,6 +149,9 @@ async function runClassify(id, item) {
       if (category) {
         item.slug = category;
         item.detectedBy = "ai";
+        // AI actually looked at the frame and is confident -- go with it,
+        // no need to make the user click Upload All for every clip.
+        scheduleUpload(id, item);
       } else {
         // Model looked at the frame and genuinely wasn't confident -- keep
         // whatever filename guess exists, but say AI was consulted.
@@ -164,6 +170,47 @@ async function runClassify(id, item) {
     if (staging.has(id)) item.analyzing = false;
     renderStagingList();
   }
+}
+
+// Once a category is known (AI-confident or manually picked), upload right
+// away instead of waiting for a separate confirmation click -- "Upload All"
+// stays around only as a manual nudge for leftovers (AI unsure/failed).
+function scheduleUpload(id, item) {
+  if (item.queuedForUpload) return;
+  item.queuedForUpload = true;
+  uploadQueueItems.push({ id, item });
+  pumpUploadQueue();
+}
+
+function pumpUploadQueue() {
+  while (activeUploadCount < UPLOAD_CONCURRENCY && uploadQueueItems.length > 0) {
+    const { id, item } = uploadQueueItems.shift();
+    if (!staging.has(id) || item.status !== "pending" || !item.slug) continue;
+    activeUploadCount++;
+    performUpload(id, item).finally(() => {
+      activeUploadCount--;
+      pumpUploadQueue();
+    });
+  }
+}
+
+async function performUpload(id, item) {
+  item.status = "uploading";
+  item.progress = 0;
+  renderStagingList();
+  try {
+    await uploadOne(item.slug, item.file, (pct) => {
+      item.progress = pct;
+      updateStagingRowProgress(id, pct);
+    });
+    item.status = "done";
+    await loadCategory(item.slug);
+  } catch (err) {
+    item.status = "error";
+    item.errorMsg = err.message;
+    item.queuedForUpload = false;
+  }
+  renderStagingList();
 }
 
 function fmtBytes(bytes) {
@@ -253,8 +300,9 @@ function buildAutoPanelHTML() {
     </div>
     <p class="panel-desc">
       Sirf videos yahan daal do — ek AI vision model video ka frame dekh ke category khud
-      guess kar lega (🤖 AI-detected), filename bhi turant ek hint deta hai (🔍) jab tak AI check kar raha ho.
-      Guess galat lage toh dropdown se badal do, phir "Upload All" dabao.
+      guess kar lega (🤖 AI-detected) aur turant apni jagah upload bhi kar dega, tumhe kuch click
+      nahi karna. Agar AI confused ho (⚠️) ya category nahi mili, tabhi dropdown se khud chunna
+      padega — chunte hi wo bhi turant upload ho jayega.
     </p>
     <div class="dropzone" id="dropzone-auto">
       <div class="dropzone-icon">🎬</div>
@@ -400,6 +448,7 @@ function renderStagingList() {
         item.slug = e.target.value || null;
         item.manualOverride = true;
         item.detectedBy = "manual";
+        if (item.slug) scheduleUpload(id, item);
         renderStagingList();
       };
       row.querySelector(".row-remove").onclick = () => {
@@ -412,13 +461,13 @@ function renderStagingList() {
   });
 
   if (needsCategory > 0) {
-    hintEl.textContent = `⚠️ ${needsCategory} file(s) ko category chunni baaki hai`;
-    uploadBtn.disabled = true;
+    hintEl.textContent = `⚠️ ${needsCategory} file(s) ko category chunni baaki hai (baaki auto-upload ho rahe hain)`;
+    uploadBtn.disabled = false;
   } else if (pendingCount === 0) {
-    hintEl.textContent = "Sab ho gaya ✅";
+    hintEl.textContent = "Sab process ho raha hai ✅";
     uploadBtn.disabled = true;
   } else {
-    hintEl.textContent = `${pendingCount} video ready to upload`;
+    hintEl.textContent = `${pendingCount} video ka guess mil chuka hai, auto-upload ho raha hai…`;
     uploadBtn.disabled = false;
   }
 }
@@ -432,29 +481,14 @@ function updateStagingRowProgress(id, pct) {
   if (status) status.textContent = `Uploading… ${pct}%`;
 }
 
-async function uploadAllStaging() {
-  const touchedSlugs = new Set();
-  const entries = Array.from(staging.entries()).filter(([, item]) => item.status === "pending" && item.slug);
-
-  for (const [id, item] of entries) {
-    item.status = "uploading";
-    item.progress = 0;
-    renderStagingList();
-    try {
-      await uploadOne(item.slug, item.file, (pct) => {
-        item.progress = pct;
-        updateStagingRowProgress(id, pct);
-      });
-      item.status = "done";
-      touchedSlugs.add(item.slug);
-    } catch (err) {
-      item.status = "error";
-      item.errorMsg = err.message;
-    }
-    renderStagingList();
-  }
-
-  for (const slug of touchedSlugs) await loadCategory(slug);
+function uploadAllStaging() {
+  // Most items auto-upload the moment AI or a manual pick sets their
+  // category (see scheduleUpload). This button is the manual nudge for
+  // whatever's left -- e.g. AI failed/unsure and the filename guess (or a
+  // just-picked category) hasn't been queued yet.
+  staging.forEach((item, id) => {
+    if (item.status === "pending" && item.slug) scheduleUpload(id, item);
+  });
 }
 
 // --- Per-category tabs (browse / manual upload) ------------------------
