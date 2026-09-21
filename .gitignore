@@ -1,9 +1,15 @@
 # --- Secrets ---
 .env
+.env.local
 kaggle.json
 .kaggle/
 *.pem
 *.key
+
+# --- Vercel / Node (upload-portal) ---
+upload-portal/.vercel/
+upload-portal/node_modules/
+node_modules/
 
 # --- Python ---
 __pycache__/

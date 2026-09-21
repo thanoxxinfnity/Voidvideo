@@ -61,10 +61,22 @@ cp .env.example .env   # fill in KAGGLE_USERNAME, KAGGLE_KEY, dataset/kernel slu
 Get your Kaggle API token at https://www.kaggle.com/settings → API → *Create New Token*.
 `.env` is gitignored — your token never touches the repo.
 
-### 1. Prepare your clips
+### 1. Collect and prepare your clips
 
-See `data/README.md` for the full clip specification. Short version: drop
-`.mp4`s in `data/raw_clips/`, optionally caption them in `data/captions/`, then:
+Two ways to get clips into `data/raw_clips/`:
+
+- **Manually**: drop `.mp4`s straight into the folder.
+- **Via the upload portal**: deploy `upload-portal/` to Vercel (see
+  `upload-portal/README.md` — dashboard-only, no CLI needed) for a
+  category-organized upload website (Locomotion/Gestures/Expressions/Secondary
+  Motion tabs, progress tracking, delete-if-you-mess-up), backed by Cloudinary.
+  Then pull everything down with:
+  ```bash
+  python scripts/fetch_clips_from_cloudinary.py
+  ```
+
+See `data/README.md` for the full clip specification. Once clips are in
+`data/raw_clips/`, optionally caption them in `data/captions/`, then:
 
 ```bash
 python scripts/prepare_dataset.py --task t2v

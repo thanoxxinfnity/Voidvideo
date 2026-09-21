@@ -1,0 +1,9 @@
+{
+  "name": "voidvideo-upload-portal",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Category-based clip upload website for VoidVideo training data, backed by Cloudinary.",
+  "scripts": {
+    "dev": "vercel dev"
+  }
+}
