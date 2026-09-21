@@ -48,6 +48,12 @@ outputs/*
 kaggle_dataset_staging/
 kaggle_kernel_staging/
 
+# --- Caption Studio (local dataset builder) ---
+caption-studio/dataset/videos/*
+!caption-studio/dataset/videos/.gitkeep
+caption-studio/dataset/dataset-metadata.json
+caption-studio/dataset.zip
+
 # --- Editors / OS ---
 .vscode/
 .idea/
