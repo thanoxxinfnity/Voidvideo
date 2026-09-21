@@ -379,14 +379,20 @@ def load_cogvideox():
     # script sends unauthenticated requests -- no HF_TOKEN set) has caused
     # silent multi-hour hangs here before. A real load finishes in a couple
     # of minutes, so 600s is already a generous margin, not a tight cutoff.
+    # Whole pipeline in float32 -- no mixed dtypes. Previously kept the VAE
+    # in float32 while the transformer stayed fp16 (a known mitigation for
+    # CogVideoX-2b's fp16 VAE decode overflowing to NaN/white on T4-class
+    # GPUs), but that combination crashes under enable_model_cpu_offload()
+    # with "Input type (c10::Half) and bias type (float) should be the
+    # same" -- confirmed via the manual Gradio tool once errors stopped
+    # being silently swallowed. This was very likely the real cause behind
+    # a chunk of this script's own silent "failed" count all along, since
+    # its per-clip except-block only ever logged to output nobody could see
+    # live. Slower than fp16, but fits fine with CPU offload on a free GPU.
     pipe = with_timeout(
-        600, CogVideoXPipeline.from_pretrained, COGVIDEOX_MODEL_ID, torch_dtype=torch.float16
+        600, CogVideoXPipeline.from_pretrained, COGVIDEOX_MODEL_ID, torch_dtype=torch.float32
     )
     print("Model weights loaded.", flush=True)
-    # Known mitigation for CogVideoX-2b producing blank/white output on
-    # T4-class GPUs: fp16 VAE decode overflows to NaN/white. Keeping the VAE
-    # in float32 while the transformer stays fp16 avoids it.
-    pipe.vae.to(dtype=torch.float32)
     pipe.enable_model_cpu_offload()
     pipe.vae.enable_slicing()
     pipe.vae.enable_tiling()

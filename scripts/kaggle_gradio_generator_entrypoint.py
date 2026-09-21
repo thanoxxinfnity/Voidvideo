@@ -208,11 +208,16 @@ for _cat, _prompts in PROMPTS.items():
         CHOICES.append((label, _p))
 
 print(f"Loading {COGVIDEOX_MODEL_ID}...", flush=True)
-pipe = CogVideoXPipeline.from_pretrained(COGVIDEOX_MODEL_ID, torch_dtype=torch.float16)
-# Known mitigation for CogVideoX-2b producing blank/white output on T4-class
-# GPUs: fp16 VAE decode overflows to NaN/white. Keeping the VAE in float32
-# while the transformer stays fp16 avoids it.
-pipe.vae.to(dtype=torch.float32)
+# Whole pipeline in float32 -- no mixed dtypes. Previously kept the VAE in
+# float32 while the transformer stayed fp16 (a known mitigation for
+# CogVideoX-2b's fp16 VAE decode overflowing to NaN/white on T4-class GPUs),
+# but that combination crashes under enable_model_cpu_offload() with
+# "Input type (c10::Half) and bias type (float) should be the same" --
+# confirmed via a real generation call once errors stopped being silently
+# swallowed. Slower than fp16, but CogVideoX-2b (2B params) with CPU
+# offload fits fine in float32 on a free-tier GPU, and this removes an
+# entire class of dtype-mismatch crashes along with the overflow bug.
+pipe = CogVideoXPipeline.from_pretrained(COGVIDEOX_MODEL_ID, torch_dtype=torch.float32)
 pipe.enable_model_cpu_offload()
 pipe.vae.enable_slicing()
 pipe.vae.enable_tiling()
