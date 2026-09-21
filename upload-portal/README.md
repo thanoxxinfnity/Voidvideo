@@ -1,37 +1,71 @@
 # VoidVideo Clip Upload Portal
 
-A tiny static website + Vercel serverless functions for collecting VoidVideo
+A tiny static website + serverless functions for collecting VoidVideo
 training clips, organized by motion/expression category, with per-clip delete
 (like a YouTube Studio uploads list). Clips are stored in Cloudinary; nothing
-is stored in this repo or on Vercel itself.
+is stored in this repo or on the hosting platform itself.
 
-- `index.html` / `style.css` / `app.js` — the whole frontend, plain JS, no build step.
-- `api/sign.js` — signs a Cloudinary upload request server-side (secret never reaches the browser).
-- `api/list.js` — lists uploaded clips for a category tag.
-- `api/delete.js` — deletes a clip by public ID.
+Two equivalent backends are included — deploy to whichever platform works for
+you, they don't need to coexist:
 
-## Deploy (via Vercel dashboard — no CLI needed)
+- **Vercel**: `api/sign.js`, `api/list.js`, `api/delete.js`
+- **Netlify**: `netlify/functions/sign.js`, `list.js`, `delete.js` + `netlify.toml`
+  (routes `/api/*` to the functions so the frontend code is identical either way)
+
+`index.html` / `style.css` / `app.js` is the whole frontend, plain JS, no build step,
+shared by both.
+
+## Deploy option A: Vercel dashboard (needs your GitHub connected to Vercel)
 
 1. Go to https://vercel.com/new and import the `thanoxxinfnity/Voidvideo` GitHub repo.
 2. When configuring the project:
    - **Root Directory**: `upload-portal` (important — this is a subfolder of the repo)
    - **Framework Preset**: "Other"
 3. Under **Environment Variables**, add (paste your real Cloudinary values directly into the
-   Vercel dashboard, not into any file in this repo):
-   - `CLOUDINARY_CLOUD_NAME`
-   - `CLOUDINARY_API_KEY`
-   - `CLOUDINARY_API_SECRET`
-4. Click **Deploy**. You'll get a `https://<something>.vercel.app` URL.
+   dashboard, not into any file in this repo):
+   - `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, `CLOUDINARY_API_SECRET`
+4. Click **Deploy**.
 
-That's it — open the URL, pick a category tab, drag clips in.
+## Deploy option B: CLI, no GitHub needed at all (Vercel or Netlify)
+
+Works even if your GitHub account isn't connected to the hosting platform —
+this deploys straight from your local folder.
+
+**Vercel:**
+```bash
+cd upload-portal
+npm i -g vercel
+vercel login
+vercel link
+vercel env add CLOUDINARY_CLOUD_NAME production
+vercel env add CLOUDINARY_API_KEY production
+vercel env add CLOUDINARY_API_SECRET production
+vercel --prod
+```
+
+**Netlify:**
+```bash
+cd upload-portal
+npm i -g netlify-cli
+netlify login
+netlify init          # choose "Create & configure a new site"
+netlify env:set CLOUDINARY_CLOUD_NAME <your_cloud_name>
+netlify env:set CLOUDINARY_API_KEY <your_api_key>
+netlify env:set CLOUDINARY_API_SECRET <your_api_secret>
+netlify deploy --prod
+```
+
+Either way you get a live URL back in the terminal.
 
 ## Local testing (optional)
 
+A `.env` with real Cloudinary values already exists locally in this folder
+for local dev (gitignored, never committed). To test:
+
 ```bash
 cd upload-portal
-cp .env.example .env.local   # fill in real Cloudinary values
-npm i -g vercel              # if you don't already have it
-vercel dev
+npm i -g vercel        # or: npm i -g netlify-cli
+vercel dev             # or: netlify dev
 ```
 
 ## Pulling uploaded clips down for training
