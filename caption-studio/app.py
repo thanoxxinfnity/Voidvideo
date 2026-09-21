@@ -181,6 +181,19 @@ def make_caption_saver(filename):
     return save
 
 
+def make_delete_handler(filename):
+    video_path = VIDEOS_DIR / filename
+    txt_path = video_path.with_suffix(".txt")
+
+    def delete(records):
+        video_path.unlink(missing_ok=True)
+        txt_path.unlink(missing_ok=True)
+        updated = [r for r in records if r["filename"] != filename]
+        return updated, f"🗑️ Deleted {filename}"
+
+    return delete
+
+
 def load_existing_clips():
     """Runs on every page load so re-opening the app (or a second browser
     tab) shows clips uploaded in an earlier session -- gr.State is otherwise
@@ -302,6 +315,9 @@ with gr.Blocks(title="VoidVideo Caption Studio") as demo:
                     interactive=True,
                 )
                 box.change(fn=make_caption_saver(rec["filename"]), inputs=box, outputs=[])
+                with gr.Column(scale=0, min_width=110):
+                    del_btn = gr.Button("🗑 Delete", size="sm", variant="stop")
+                    del_btn.click(fn=make_delete_handler(rec["filename"]), inputs=clip_state, outputs=[clip_state, upload_status])
 
     upload.upload(fn=handle_upload, inputs=[upload, clip_state], outputs=[clip_state, upload_status])
     demo.load(fn=load_existing_clips, outputs=clip_state)
