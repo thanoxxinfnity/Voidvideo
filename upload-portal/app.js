@@ -44,7 +44,12 @@ const CATEGORY_KEYWORDS = {
 
 const VIDEO_EXT_RE = /\.(mp4|mov|webm|mkv|avi|m4v|3gp|3gpp|wmv|flv|mts|m2ts)$/i;
 
-const CLASSIFY_CONCURRENCY = 2;
+// Was 2 -- two videos decoding at once (each getting its own <video> element
+// and canvas) was still enough to crash the tab on a 4GB-RAM phone even
+// after switching preload to "metadata". One at a time is slower but doesn't
+// crash; classification/captioning happen in the background regardless, so
+// the user isn't blocked waiting on this.
+const CLASSIFY_CONCURRENCY = 1;
 const UPLOAD_CONCURRENCY = 2;
 
 const counts = {};
@@ -103,10 +108,22 @@ function extractFrameGridBase64(file) {
     const video = document.createElement("video");
     video.muted = true;
     video.playsInline = true;
-    video.preload = "auto";
+    // "auto" tells the browser to buffer the WHOLE file, not just enough to
+    // seek -- on a low-RAM phone, 2 videos decoding at once with "auto" was
+    // enough to crash the whole browser tab. "metadata" only loads duration/
+    // dimensions up front; seeking still fetches the specific frame data
+    // on demand, which is all extractFrameGridBase64 actually needs.
+    video.preload = "metadata";
     const url = URL.createObjectURL(file);
     video.src = url;
-    const cleanup = () => URL.revokeObjectURL(url);
+    const cleanup = () => {
+      URL.revokeObjectURL(url);
+      // Explicitly drop the decoded buffer instead of waiting for GC --
+      // matters when several of these run back-to-back on a memory-tight
+      // device.
+      video.removeAttribute("src");
+      video.load();
+    };
     const fail = (err) => { cleanup(); reject(err); };
 
     video.addEventListener("loadedmetadata", async () => {
