@@ -39,9 +39,39 @@ def pip_install():
 pip_install()
 
 import torch  # noqa: E402
-from diffusers import CogVideoXPipeline  # noqa: E402
+from diffusers import CogVideoXPipeline, CogVideoXImageToVideoPipeline  # noqa: E402
 from diffusers.utils import export_to_video  # noqa: E402
 import gradio as gr  # noqa: E402
+
+# Native generation stays at the crash-safe 8fps below -- CogVideoX itself
+# was never re-tuned to output more frames per second (that's what triggered
+# the original OOMs). Instead the exported clip is upsampled to this fps
+# afterwards with ffmpeg motion interpolation, a pure CPU/ffmpeg post-process
+# that doesn't touch GPU memory at all.
+OUTPUT_FPS = 24
+
+
+def interpolate_to_output_fps(src_path: str) -> str:
+    """Upsample an exported clip from its native FPS to OUTPUT_FPS with
+    ffmpeg's motion-compensated frame interpolation. Runs after the GPU has
+    already been released for this generation, so it can't contribute to an
+    OOM. Falls back to the original (native-fps) file if ffmpeg is missing
+    or the filter fails, rather than losing the result."""
+    dst_path = src_path.replace(".mp4", f"_{OUTPUT_FPS}fps.mp4")
+    try:
+        subprocess.run(
+            [
+                "ffmpeg", "-y", "-i", src_path,
+                "-filter:v", f"minterpolate=fps={OUTPUT_FPS}:mi_mode=mci:mc_mode=aobmc:vsbmc=1",
+                "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "18",
+                dst_path,
+            ],
+            check=True, capture_output=True, timeout=180,
+        )
+        return dst_path
+    except Exception as e:
+        print(f"24fps interpolation failed, returning native-fps clip instead: {e}", flush=True)
+        return src_path
 
 COGVIDEOX_MODEL_ID = "THUDM/CogVideoX-2b"
 # Cut from 49 (the training config's frame count) after three straight OOM
@@ -57,6 +87,17 @@ FPS = 8
 # with dtype. Smaller resolution directly shrinks that token count.
 HEIGHT = 256
 WIDTH = 384
+
+# I2V uses the 5B model (2.5x the 2B T2V model's params) -- loaded lazily
+# (only on first Image-to-Video generate call) so a T2V-only session never
+# pays its ~20GB download/load cost. Kept even smaller than the T2V settings
+# above since the bigger transformer leaves less VRAM headroom on the same
+# 14.5GB T4, even with identical sequential-offload/slicing/tiling applied.
+COGVIDEOX_I2V_MODEL_ID = "THUDM/CogVideoX-5b-I2V"
+I2V_NUM_FRAMES = 17
+I2V_FPS = 8
+I2V_HEIGHT = 208
+I2V_WIDTH = 304
 
 STYLE_SUFFIX = (
     ", modern 2D anime film style, fully colored with natural cel shading and "
@@ -227,28 +268,55 @@ print(f"Loading {COGVIDEOX_MODEL_ID}...", flush=True)
 # bf16 throughout sidesteps all three failure modes at once. T4 lacks
 # native bf16 tensor cores so this may compute a bit slower than fp16, but
 # that's a fine tradeoff for actually fitting and not crashing.
-pipe = CogVideoXPipeline.from_pretrained(COGVIDEOX_MODEL_ID, torch_dtype=torch.bfloat16)
-# enable_model_cpu_offload() moves whole components (transformer/VAE/text
-# encoder) to GPU as a unit and was leaving more resident than expected --
-# baseline "memory in use" grew from ~5GB to ~10.7GB between otherwise
-# identical runs at the same point in the pipeline. enable_sequential_cpu_offload()
-# moves individual layers on and off GPU one at a time instead, which is
-# much slower but keeps peak GPU memory far lower -- the right tradeoff
-# after three straight OOM crashes on this 14.5GB card.
-pipe.enable_sequential_cpu_offload()
-pipe.vae.enable_slicing()
-pipe.vae.enable_tiling()
-try:
-    # Directly targets the attention memory spike (a single 70GB alloc
-    # attempt was observed) by processing attention in chunks instead of
-    # materializing the full attention matrix at once.
-    pipe.enable_attention_slicing()
-except AttributeError:
-    pass
-print("Model loaded. Launching Gradio...", flush=True)
+def _harden_pipe(p):
+    """Apply the same low-VRAM tricks (bf16 already set at from_pretrained)
+    to any CogVideoX pipeline instance -- shared between T2V and I2V so the
+    I2V path gets the identical crash-safety as the battle-tested T2V one."""
+    p.enable_sequential_cpu_offload()
+    p.vae.enable_slicing()
+    p.vae.enable_tiling()
+    try:
+        p.enable_attention_slicing()
+    except AttributeError:
+        pass
+    return p
 
 
-def generate(prompt_text, steps, seed):
+print(f"Loading {COGVIDEOX_MODEL_ID}...", flush=True)
+# Whole pipeline in bfloat16 -- no mixed dtypes, same memory footprint as
+# fp16 (float32 just OOM'd on this 14.5GB T4: "Tried to allocate 20.00 MiB
+# ... 14.54 GiB memory in use"). bf16 has the same wide exponent range as
+# fp32 (unlike fp16), which is what actually avoids the VAE decode
+# overflowing to NaN/white on T4-class GPUs -- fp16 has a narrow exponent
+# range and overflows there, float32 fixed that but doesn't fit, and mixing
+# fp16-transformer with fp32-VAE crashed under enable_model_cpu_offload().
+# bf16 throughout sidesteps all three failure modes at once. T4 lacks
+# native bf16 tensor cores so this may compute a bit slower than fp16, but
+# that's a fine tradeoff for actually fitting and not crashing.
+t2v_pipe = _harden_pipe(CogVideoXPipeline.from_pretrained(COGVIDEOX_MODEL_ID, torch_dtype=torch.bfloat16))
+print("T2V model loaded. Launching Gradio...", flush=True)
+
+# I2V (5B, ~2.5x the T2V model) is NOT loaded here -- only on first actual
+# use, from inside generate() below. Eagerly loading both up front would
+# double the startup download/VRAM-mapping time for sessions that only ever
+# use one mode.
+_i2v_pipe = None
+
+
+def get_i2v_pipe():
+    global _i2v_pipe
+    if _i2v_pipe is None:
+        print(f"First Image-to-Video request -- loading {COGVIDEOX_I2V_MODEL_ID} (larger model, may take a few minutes)...", flush=True)
+        _i2v_pipe = _harden_pipe(
+            CogVideoXImageToVideoPipeline.from_pretrained(COGVIDEOX_I2V_MODEL_ID, torch_dtype=torch.bfloat16)
+        )
+        print("I2V model loaded.", flush=True)
+    return _i2v_pipe
+
+
+def generate(mode, prompt_text, image, steps, seed):
+    if mode == "Image-to-Video" and image is None:
+        return None, "ERROR: Image-to-Video ke liye ek image upload karo pehle."
     if not prompt_text or not prompt_text.strip():
         return None, "ERROR: Prompt khali hai -- kuch likho ya dropdown se pick karo."
 
@@ -257,21 +325,42 @@ def generate(prompt_text, steps, seed):
 
     try:
         generator = torch.Generator(device="cuda").manual_seed(seed)
-        frames = pipe(
-            prompt=full_prompt,
-            negative_prompt=NEGATIVE_PROMPT,
-            num_frames=NUM_FRAMES,
-            height=HEIGHT,
-            width=WIDTH,
-            num_inference_steps=int(steps),
-            guidance_scale=6.0,
-            output_type="pil",
-            generator=generator,
-        ).frames[0]
+        if mode == "Image-to-Video":
+            pipe = get_i2v_pipe()
+            frames = pipe(
+                prompt=full_prompt,
+                image=image,
+                negative_prompt=NEGATIVE_PROMPT,
+                num_frames=I2V_NUM_FRAMES,
+                height=I2V_HEIGHT,
+                width=I2V_WIDTH,
+                num_inference_steps=int(steps),
+                guidance_scale=6.0,
+                output_type="pil",
+                generator=generator,
+            ).frames[0]
+            native_fps = I2V_FPS
+        else:
+            frames = t2v_pipe(
+                prompt=full_prompt,
+                negative_prompt=NEGATIVE_PROMPT,
+                num_frames=NUM_FRAMES,
+                height=HEIGHT,
+                width=WIDTH,
+                num_inference_steps=int(steps),
+                guidance_scale=6.0,
+                output_type="pil",
+                generator=generator,
+            ).frames[0]
+            native_fps = FPS
 
-        out_path = f"/kaggle/working/clip_seed{seed}.mp4"
-        export_to_video(frames, out_path, fps=FPS)
-        return out_path, f"Seed used: {seed} (same seed + prompt = same result, change seed for variety)"
+        raw_path = f"/kaggle/working/clip_seed{seed}_native.mp4"
+        export_to_video(frames, raw_path, fps=native_fps)
+        out_path = interpolate_to_output_fps(raw_path)
+        return out_path, (
+            f"Seed used: {seed} (same seed + prompt/image = same result, change seed for variety). "
+            f"Generated at {native_fps}fps, upsampled to {OUTPUT_FPS}fps."
+        )
     except Exception as e:
         # Returned directly (not raised) so both the UI and any API caller
         # see the real reason instead of Gradio's generic hidden AppError.
@@ -286,14 +375,25 @@ def generate(prompt_text, steps, seed):
 with gr.Blocks(title="VoidVideo Clip Studio") as demo:
     gr.Markdown(
         "# VoidVideo Clip Studio (manual)\n"
-        "Pick a ready-made prompt or type your own, hit **Generate**, wait "
-        "~8-10 minutes (CogVideoX-2b on this GPU), then watch the result. "
-        "If it's good, download it and upload it yourself via the site's "
-        "Smart Upload page, tagged with the right category. Nothing here "
-        "auto-uploads -- you decide what's good enough."
+        "Pick Text-to-Video or Image-to-Video, pick a ready-made prompt or "
+        "type your own, hit **Generate**, wait (T2V ~8-10 min; I2V is on a "
+        "bigger 5B model and slower, especially the first run while it "
+        "loads). Output is generated on a safe low-VRAM native fps then "
+        "upsampled to 24fps automatically. If it's good, download it and "
+        "upload it yourself via the site's Smart Upload page, tagged with "
+        "the right category. Nothing here auto-uploads -- you decide what's "
+        "good enough."
     )
     with gr.Row():
         with gr.Column():
+            mode = gr.Radio(
+                ["Text-to-Video", "Image-to-Video"], value="Text-to-Video", label="Mode"
+            )
+            image_in = gr.Image(label="Source image (Image-to-Video only)", type="pil", visible=False)
+            mode.change(
+                fn=lambda m: gr.update(visible=(m == "Image-to-Video")),
+                inputs=mode, outputs=image_in,
+            )
             dropdown = gr.Dropdown(
                 choices=CHOICES, label="Ready-made prompt (pick one, or clear and type your own below)"
             )
@@ -303,11 +403,11 @@ with gr.Blocks(title="VoidVideo Clip Studio") as demo:
             dropdown.change(fn=lambda x: x, inputs=dropdown, outputs=prompt_box)
             steps_slider = gr.Slider(10, 50, value=30, step=1, label="Inference steps (30 = good default, higher = slower but sometimes cleaner)")
             seed_box = gr.Number(value=-1, label="Seed (-1 = random each time)")
-            btn = gr.Button("Generate (~8-10 min)", variant="primary")
+            btn = gr.Button("Generate", variant="primary")
         with gr.Column():
             video_out = gr.Video(label="Result (right-click / use the download icon to save)")
             status = gr.Textbox(label="Status", interactive=False)
 
-    btn.click(fn=generate, inputs=[prompt_box, steps_slider, seed_box], outputs=[video_out, status])
+    btn.click(fn=generate, inputs=[mode, prompt_box, image_in, steps_slider, seed_box], outputs=[video_out, status])
 
 demo.queue().launch(share=True, show_error=True)
