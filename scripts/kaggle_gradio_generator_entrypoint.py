@@ -314,60 +314,139 @@ def get_i2v_pipe():
     return _i2v_pipe
 
 
-def generate(mode, prompt_text, image, steps, seed):
+import math  # noqa: E402
+import time  # noqa: E402
+
+# CogVideoX has a fixed trained frame window -- there's no VRAM/time setting
+# that makes one generation call produce more than a few seconds. A longer
+# requested duration is instead built by chaining multiple short segments:
+# generate one, feed its LAST FRAME into the I2V pipeline as the next
+# segment's starting image (so motion continues instead of hard-cutting to
+# an unrelated scene), repeat until the target duration is covered, then
+# concatenate. This is slow (each segment is its own full generation) but
+# that slowness is exactly the "low VRAM, take longer, don't crash"
+# trade-off asked for -- no segment is any bigger than the already-hardened
+# single-clip settings above.
+T2V_SEGMENT_SECONDS = NUM_FRAMES / FPS
+I2V_SEGMENT_SECONDS = I2V_NUM_FRAMES / I2V_FPS
+# Rough wall-clock estimates from this repo's own prior runs on a Kaggle T4,
+# shown to set expectations before a long chained run starts -- not a
+# guarantee, actual time varies with steps/queue load.
+EST_MINUTES_PER_T2V_SEGMENT = 9
+EST_MINUTES_PER_I2V_SEGMENT = 14
+
+
+def plan_segments(mode: str, duration_seconds: float):
+    """Returns (total_segments, estimated_minutes) for a target duration.
+    Segment 0 uses `mode`; every segment after that is always I2V
+    (continuing from the previous segment's last frame), regardless of
+    starting mode."""
+    first_seg_seconds = T2V_SEGMENT_SECONDS if mode == "Text-to-Video" else I2V_SEGMENT_SECONDS
+    remaining = max(0.0, duration_seconds - first_seg_seconds)
+    extra_segments = math.ceil(remaining / I2V_SEGMENT_SECONDS) if remaining > 0 else 0
+    total_segments = 1 + extra_segments
+    est_minutes = (
+        (EST_MINUTES_PER_T2V_SEGMENT if mode == "Text-to-Video" else EST_MINUTES_PER_I2V_SEGMENT)
+        + extra_segments * EST_MINUTES_PER_I2V_SEGMENT
+    )
+    return total_segments, est_minutes
+
+
+def concat_segments(paths: list, seed: int) -> str:
+    if len(paths) == 1:
+        return paths[0]
+    list_path = f"/kaggle/working/concat_list_{seed}.txt"
+    with open(list_path, "w") as f:
+        for p in paths:
+            f.write(f"file '{p}'\n")
+    out_path = f"/kaggle/working/final_seed{seed}_{OUTPUT_FPS}fps.mp4"
+    # All segments already share the same codec/pix_fmt/fps (both came out of
+    # interpolate_to_output_fps), so a stream-copy concat is safe and instant
+    # -- no re-encode needed.
+    subprocess.run(
+        ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", list_path, "-c", "copy", out_path],
+        check=True, capture_output=True, timeout=120,
+    )
+    return out_path
+
+
+def generate(mode, prompt_text, image, steps, seed, duration_seconds):
     if mode == "Image-to-Video" and image is None:
-        return None, "ERROR: Image-to-Video ke liye ek image upload karo pehle."
+        yield None, "ERROR: Image-to-Video ke liye ek image upload karo pehle."
+        return
     if not prompt_text or not prompt_text.strip():
-        return None, "ERROR: Prompt khali hai -- kuch likho ya dropdown se pick karo."
+        yield None, "ERROR: Prompt khali hai -- kuch likho ya dropdown se pick karo."
+        return
 
     full_prompt = prompt_text.strip() + STYLE_SUFFIX
     seed = int(seed) if seed is not None and seed >= 0 else torch.randint(0, 2**31 - 1, (1,)).item()
+    duration_seconds = float(duration_seconds or T2V_SEGMENT_SECONDS)
 
+    total_segments, est_minutes = plan_segments(mode, duration_seconds)
+    yield None, (
+        f"Planning {total_segments} chained segment(s) to cover ~{duration_seconds:.0f}s "
+        f"of video. Estimated time: ~{est_minutes} min (rough estimate, varies). Starting..."
+    )
+
+    segment_paths = []
+    current_image = image
+    t_start = time.time()
     try:
-        generator = torch.Generator(device="cuda").manual_seed(seed)
-        if mode == "Image-to-Video":
-            pipe = get_i2v_pipe()
-            frames = pipe(
-                prompt=full_prompt,
-                image=image,
-                negative_prompt=NEGATIVE_PROMPT,
-                num_frames=I2V_NUM_FRAMES,
-                height=I2V_HEIGHT,
-                width=I2V_WIDTH,
-                num_inference_steps=int(steps),
-                guidance_scale=6.0,
-                output_type="pil",
-                generator=generator,
-            ).frames[0]
-            native_fps = I2V_FPS
-        else:
-            frames = t2v_pipe(
-                prompt=full_prompt,
-                negative_prompt=NEGATIVE_PROMPT,
-                num_frames=NUM_FRAMES,
-                height=HEIGHT,
-                width=WIDTH,
-                num_inference_steps=int(steps),
-                guidance_scale=6.0,
-                output_type="pil",
-                generator=generator,
-            ).frames[0]
-            native_fps = FPS
+        for i in range(total_segments):
+            seg_generator = torch.Generator(device="cuda").manual_seed(seed + i)
+            if i == 0 and mode == "Text-to-Video":
+                frames = t2v_pipe(
+                    prompt=full_prompt,
+                    negative_prompt=NEGATIVE_PROMPT,
+                    num_frames=NUM_FRAMES,
+                    height=HEIGHT,
+                    width=WIDTH,
+                    num_inference_steps=int(steps),
+                    guidance_scale=6.0,
+                    output_type="pil",
+                    generator=seg_generator,
+                ).frames[0]
+                native_fps = FPS
+            else:
+                pipe = get_i2v_pipe()
+                frames = pipe(
+                    prompt=full_prompt,
+                    image=current_image,
+                    negative_prompt=NEGATIVE_PROMPT,
+                    num_frames=I2V_NUM_FRAMES,
+                    height=I2V_HEIGHT,
+                    width=I2V_WIDTH,
+                    num_inference_steps=int(steps),
+                    guidance_scale=6.0,
+                    output_type="pil",
+                    generator=seg_generator,
+                ).frames[0]
+                native_fps = I2V_FPS
 
-        raw_path = f"/kaggle/working/clip_seed{seed}_native.mp4"
-        export_to_video(frames, raw_path, fps=native_fps)
-        out_path = interpolate_to_output_fps(raw_path)
-        return out_path, (
-            f"Seed used: {seed} (same seed + prompt/image = same result, change seed for variety). "
-            f"Generated at {native_fps}fps, upsampled to {OUTPUT_FPS}fps."
+            raw_seg_path = f"/kaggle/working/seg{i}_seed{seed}_native.mp4"
+            export_to_video(frames, raw_seg_path, fps=native_fps)
+            segment_paths.append(interpolate_to_output_fps(raw_seg_path))
+            current_image = frames[-1]  # feeds the next segment's continuation
+            torch.cuda.empty_cache()
+
+            elapsed_min = (time.time() - t_start) / 60
+            more = "Concatenating..." if i == total_segments - 1 else "Generating next segment..."
+            yield None, f"Segment {i + 1}/{total_segments} done ({elapsed_min:.1f} min elapsed). {more}"
+
+        final_path = concat_segments(segment_paths, seed)
+        total_min = (time.time() - t_start) / 60
+        yield final_path, (
+            f"Done: {total_segments} segment(s), ~{duration_seconds:.0f}s target, "
+            f"{total_min:.1f} min actual, {OUTPUT_FPS}fps. Seed base: {seed} "
+            "(same seed+prompt/image = same result, change seed for variety)."
         )
     except Exception as e:
-        # Returned directly (not raised) so both the UI and any API caller
+        # Yielded directly (not raised) so both the UI and any API caller
         # see the real reason instead of Gradio's generic hidden AppError.
         import traceback
         tb = traceback.format_exc()
         print(f"GENERATE FAILED: {tb}", flush=True)
-        return None, f"ERROR: {type(e).__name__}: {e}"
+        yield None, f"ERROR: {type(e).__name__}: {e}"
     finally:
         torch.cuda.empty_cache()
 
@@ -402,12 +481,22 @@ with gr.Blocks(title="VoidVideo Clip Studio") as demo:
             )
             dropdown.change(fn=lambda x: x, inputs=dropdown, outputs=prompt_box)
             steps_slider = gr.Slider(10, 50, value=30, step=1, label="Inference steps (30 = good default, higher = slower but sometimes cleaner)")
+            duration_slider = gr.Slider(
+                3, 60, value=20, step=1,
+                label="Target duration (seconds) -- longer than ~3-6s chains multiple "
+                      "segments together (each continuing from the last one's final frame), "
+                      "which takes proportionally longer but stays in the same low-VRAM settings",
+            )
             seed_box = gr.Number(value=-1, label="Seed (-1 = random each time)")
             btn = gr.Button("Generate", variant="primary")
         with gr.Column():
             video_out = gr.Video(label="Result (right-click / use the download icon to save)")
-            status = gr.Textbox(label="Status", interactive=False)
+            status = gr.Textbox(label="Status (updates per segment on longer runs)", interactive=False)
 
-    btn.click(fn=generate, inputs=[mode, prompt_box, image_in, steps_slider, seed_box], outputs=[video_out, status])
+    btn.click(
+        fn=generate,
+        inputs=[mode, prompt_box, image_in, steps_slider, seed_box, duration_slider],
+        outputs=[video_out, status],
+    )
 
 demo.queue().launch(share=True, show_error=True)
