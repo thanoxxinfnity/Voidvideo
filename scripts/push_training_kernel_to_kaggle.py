@@ -79,6 +79,16 @@ def main():
         'TRAIN_TASK = "t2v"  # rewritten at push time; "t2v" or "i2v"',
         f'TRAIN_TASK = "{args.task}"  # rewritten at push time; "t2v" or "i2v"',
     )
+    hf_token = os.environ.get("HF_TOKEN")
+    if hf_token:
+        # Same pattern as push_gradio_generator_to_kaggle.py: injected only
+        # into the staged (gitignored) copy, never the tracked source.
+        # Unauthenticated HF requests are slow/rate-limited and this kernel
+        # downloads T5-XXL + the CogVideoX transformer + VAE on every run.
+        entrypoint_code = f'import os as _os; _os.environ["HF_TOKEN"] = {hf_token!r}\n' + entrypoint_code
+        print("HF_TOKEN found in .env -- injecting into the staged kernel for faster/authenticated downloads.")
+    else:
+        print("No HF_TOKEN in .env -- proceeding with unauthenticated (slower, rate-limited) HF downloads.")
     (STAGING_DIR / "kaggle_entrypoint.py").write_text(entrypoint_code)
 
     # Kaggle's kernel-metadata.json schema has no field for arbitrary env vars,
