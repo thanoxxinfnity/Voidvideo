@@ -5,12 +5,6 @@ diffusers>=0.30.0
 transformers>=4.44.0
 accelerate>=0.33.0
 peft>=0.12.0
-# Kaggle's base image ships torchao 0.10.0; recent peft releases probe
-# is_torchao_available() at import time and raise ImportError outright on
-# any older version instead of just treating it as unavailable, which
-# crashed training before a single step ran. Pin explicitly so pip upgrades
-# it past that check.
-torchao>=0.16.0
 safetensors>=0.4.3
 sentencepiece
 

@@ -64,6 +64,16 @@ def main():
     sys.path.insert(0, str(REPO_DIR))
 
     run(["pip", "install", "-q", "-r", "requirements.txt"])
+    # Kaggle's base image ships torchao 0.10.0. A recent peft release probes
+    # is_torchao_available() while dispatching LoRA layers -- even though we
+    # never asked for torchao-backed quantized LoRA -- and raises ImportError
+    # outright on any *incompatible* (not just missing) version, crashing
+    # training before a single step ran. Adding torchao>=0.16.0 to
+    # requirements.txt did not take effect in this environment (still 0.10.0
+    # after install, likely a Kaggle-side constraint pinning it), so instead
+    # uninstall it entirely: is_torchao_available() treats "not installed" as
+    # a clean, exception-free False rather than a version check that can fail.
+    subprocess.run(["pip", "uninstall", "-y", "-q", "torchao"], check=False)
 
     dataset_dir = find_dataset_dir()
     processed_link = REPO_DIR / "data" / "processed"
