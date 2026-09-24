@@ -101,12 +101,17 @@ def _set_generation_settings(multi_gpu_active: bool):
     global HEIGHT, WIDTH, NUM_FRAMES, I2V_NUM_FRAMES, I2V_HEIGHT, I2V_WIDTH
     I2V_HEIGHT, I2V_WIDTH = 480, 720  # fixed by the CogVideoX-5b-I2V checkpoint regardless
     if multi_gpu_active:
-        # Native training-config resolution/frame count -- no downscaling
-        # needed once the model is sharded across both GPUs instead of
-        # squeezed onto one.
+        # Native training-config resolution (avoids the out-of-distribution
+        # noise/garbage output the low-VRAM path produced), kept even with
+        # 2 GPUs -- but frame count is still cut hard. device_map only
+        # shards which GPU holds which *module*; CogVideoX's own joint
+        # spatio-temporal attention op runs on one GPU and doesn't respect
+        # enable_attention_slicing() (a live OOM at 49 frames confirmed this
+        # -- it tried to allocate the exact same 70GB either way), so frame
+        # count is the only remaining memory knob at this resolution.
         HEIGHT, WIDTH = 480, 720
-        NUM_FRAMES = 49
-        I2V_NUM_FRAMES = 49
+        NUM_FRAMES = 9
+        I2V_NUM_FRAMES = 9
     else:
         # Single-GPU fallback: same crash-safe low-VRAM settings as before.
         # This resolution is below CogVideoX's trained 480x720, which trades
