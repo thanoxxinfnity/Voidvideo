@@ -202,7 +202,14 @@ def main():
         frames = dataset[i]["frames"].unsqueeze(0)
         latents = encode_video(vae, frames, "cpu").to(weight_dtype)[0]
         cached.append((latents, caption_index[row.get("caption", "")]))
-        if (i + 1) % 20 == 0 or i + 1 == len(dataset.rows):
+        # A 49-frame 480x720 fp32 tiled encode is a large, oddly-shaped
+        # allocation; repeating it 143 times without a cache clear let the
+        # allocator's free blocks fragment until an encode could no longer
+        # find a big-enough contiguous span and fell back to slow retries --
+        # a live run stalled in exactly this loop with no error, no progress,
+        # and no crash for 15+ minutes.
+        torch.cuda.empty_cache()
+        if (i + 1) % 5 == 0 or i + 1 == len(dataset.rows):
             print(f"Precomputed latents {i + 1}/{len(dataset.rows)}", flush=True)
 
     del vae
