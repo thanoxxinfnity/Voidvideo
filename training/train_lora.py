@@ -24,8 +24,10 @@ close next: encode the first frame with `vae`, concatenate it onto
 CogVideoXImageToVideoPipeline uses at inference time.
 """
 import argparse
+import gc
 import math
 import os
+import random
 from pathlib import Path
 
 import torch
@@ -160,11 +162,53 @@ def main():
         num_frames=cfg["num_frames"],
         height=cfg["height"],
         width=cfg["width"],
-        caption_dropout=cfg["dataset"]["caption_dropout"],
     )
+
+    # The frozen encoders only ever see the same 143 clips and captions, so
+    # encode everything once up front and then drop T5 + VAE from GPU memory
+    # entirely. Encoding per step made the second GPU hold T5-XXL (~9.5GB)
+    # *and* a 49-frame fp32 VAE encode at the same time, which OOM'd, and
+    # would have re-run that VAE encode on every one of the 3000 steps. The
+    # dataset is deterministic (fixed frame indices), so caching is exact;
+    # caption dropout is re-applied per step below by swapping in the
+    # precomputed empty-caption embedding.
+    #
+    # Training is single-process (see kaggle_entrypoint.py), so with 2 GPUs
+    # the encoders run on the idle second one; with one GPU, T5-XXL can't
+    # share a T4 with the transformer, so it runs on CPU instead.
+    if torch.cuda.device_count() > 1 and accelerator.num_processes == 1:
+        enc_device = torch.device("cuda", (accelerator.device.index or 0) + 1)
+        text_encoder.to(enc_device)
+        vae.to(enc_device)
+    else:
+        text_encoder.to("cpu")
+        vae.to(accelerator.device)
+    print(f"transformer on {accelerator.device}, text encoder on {text_encoder.device}, VAE on {vae.device}")
+
+    captions = sorted({row.get("caption", "") for row in dataset.rows} | {""})
+    caption_index = {c: i for i, c in enumerate(captions)}
+    caption_embeds = torch.cat([
+        encode_prompt(tokenizer, text_encoder, [c], "cpu").to(weight_dtype) for c in captions
+    ])
+    empty_caption_idx = caption_index[""]
+    print(f"Precomputed {len(captions)} caption embeddings.")
+
+    cached = []
+    for i, row in enumerate(dataset.rows):
+        frames = dataset[i]["frames"].unsqueeze(0)
+        latents = encode_video(vae, frames, "cpu").to(weight_dtype)[0]
+        cached.append((latents, caption_index[row.get("caption", "")]))
+        if (i + 1) % 20 == 0 or i + 1 == len(dataset.rows):
+            print(f"Precomputed latents {i + 1}/{len(dataset.rows)}", flush=True)
+
+    del text_encoder, vae
+    gc.collect()
+    torch.cuda.empty_cache()
+
+    caption_dropout = cfg["dataset"]["caption_dropout"]
     dataloader = DataLoader(
-        dataset, batch_size=cfg["train_batch_size"], shuffle=True,
-        num_workers=2, collate_fn=lambda batch: batch,
+        cached, batch_size=cfg["train_batch_size"], shuffle=True,
+        collate_fn=lambda batch: batch,
     )
 
     lr_scheduler = torch.optim.lr_scheduler.LambdaLR(
@@ -175,19 +219,6 @@ def main():
     transformer, optimizer, dataloader, lr_scheduler = accelerator.prepare(
         transformer, optimizer, dataloader, lr_scheduler
     )
-    # Training is single-process (see kaggle_entrypoint.py), so a second GPU
-    # would otherwise sit idle. Put the frozen encoders there and leave the
-    # primary GPU entirely to the transformer + its activations. With only
-    # one GPU, keep the VAE on it but run T5 on CPU -- T5-XXL alone is ~9.5GB
-    # and can't share one T4 with the transformer.
-    if torch.cuda.device_count() > 1 and accelerator.num_processes == 1:
-        aux_device = torch.device("cuda", (accelerator.device.index or 0) + 1)
-        text_encoder.to(aux_device)
-        vae.to(aux_device)
-    else:
-        text_encoder.to("cpu")
-        vae.to(accelerator.device)
-    print(f"transformer on {accelerator.device}, text encoder on {text_encoder.device}, VAE on {vae.device}")
 
     output_dir = REPO_ROOT / cfg["output_dir"]
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -198,11 +229,12 @@ def main():
     while global_step < cfg["max_train_steps"]:
         for batch in dataloader:
             with accelerator.accumulate(transformer):
-                pixel_values = torch.stack([b["frames"] for b in batch])
-                captions = [b["caption"] for b in batch]
-
-                latents = encode_video(vae, pixel_values, accelerator.device).to(dtype=weight_dtype)
-                prompt_embeds = encode_prompt(tokenizer, text_encoder, captions, accelerator.device)
+                latents = torch.stack([lat for lat, _ in batch]).to(accelerator.device)
+                cap_ids = [
+                    empty_caption_idx if random.random() < caption_dropout else idx
+                    for _, idx in batch
+                ]
+                prompt_embeds = caption_embeds[cap_ids].to(accelerator.device)
 
                 noise = torch.randn_like(latents)
                 bsz = latents.shape[0]
