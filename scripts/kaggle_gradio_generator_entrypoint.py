@@ -362,7 +362,8 @@ def _load_pipe(pipe_cls, model_id, is_first_pipe: bool):
     return _harden_pipe(pipe)
 
 
-print(f"Loading {COGVIDEOX_MODEL_ID}...", flush=True)
+import gc  # noqa: E402
+
 # Whole pipeline in bfloat16 -- no mixed dtypes, same memory footprint as
 # fp16 (float32 just OOM'd on a single 14.5GB T4: "Tried to allocate 20.00
 # MiB ... 14.54 GiB memory in use"). bf16 has the same wide exponent range
@@ -372,20 +373,58 @@ print(f"Loading {COGVIDEOX_MODEL_ID}...", flush=True)
 # fp16-transformer with fp32-VAE crashed under enable_model_cpu_offload().
 # bf16 throughout sidesteps all three failure modes at once regardless of
 # which VRAM strategy below actually ends up used.
-t2v_pipe = _load_pipe(CogVideoXPipeline, COGVIDEOX_MODEL_ID, is_first_pipe=True)
-print("T2V model loaded. Launching Gradio...", flush=True)
+print(f"Probing GPU layout with {COGVIDEOX_MODEL_ID}...", flush=True)
+_probe_pipe = _load_pipe(CogVideoXPipeline, COGVIDEOX_MODEL_ID, is_first_pipe=True)
+del _probe_pipe
+gc.collect()
+torch.cuda.empty_cache()
+print(
+    f"Probe done (MULTI_GPU_ACTIVE={MULTI_GPU_ACTIVE}, {HEIGHT}x{WIDTH}, "
+    f"T2V {NUM_FRAMES}f, I2V {I2V_NUM_FRAMES}f). Launching Gradio...",
+    flush=True,
+)
 
-# I2V (5B, ~2.5x the T2V model) is NOT loaded here -- only on first actual
-# use, from inside generate() below. Eagerly loading both up front would
-# double the startup download/VRAM-mapping time for sessions that only ever
-# use one mode.
+# Both pipelines are lazy-loaded from here on (T2V included, despite the
+# eager probe load above -- that copy was freed immediately). Chained
+# generation switches between T2V (segment 0 only) and I2V (every segment
+# after), and keeping BOTH resident on the same 2 GPUs at once was exactly
+# what caused a live OOM even after the per-op attention fix: T2V's own
+# footprint plus I2V's on the same shared GPU pushed it over 14.5GB even
+# though neither alone was the problem. get_t2v_pipe()/get_i2v_pipe() each
+# free the other model first, so only one of the two is ever resident.
+_t2v_pipe = None
 _i2v_pipe = None
+
+
+def _unload(which: str):
+    global _t2v_pipe, _i2v_pipe
+    if which == "t2v" and _t2v_pipe is not None:
+        del _t2v_pipe
+        _t2v_pipe = None
+    elif which == "i2v" and _i2v_pipe is not None:
+        del _i2v_pipe
+        _i2v_pipe = None
+    else:
+        return
+    gc.collect()
+    torch.cuda.empty_cache()
+
+
+def get_t2v_pipe():
+    global _t2v_pipe
+    if _t2v_pipe is None:
+        _unload("i2v")
+        print(f"Loading {COGVIDEOX_MODEL_ID}...", flush=True)
+        _t2v_pipe = _load_pipe(CogVideoXPipeline, COGVIDEOX_MODEL_ID, is_first_pipe=False)
+        print("T2V model loaded.", flush=True)
+    return _t2v_pipe
 
 
 def get_i2v_pipe():
     global _i2v_pipe
     if _i2v_pipe is None:
-        print(f"First Image-to-Video request -- loading {COGVIDEOX_I2V_MODEL_ID} (larger model, may take a few minutes)...", flush=True)
+        _unload("t2v")
+        print(f"Loading {COGVIDEOX_I2V_MODEL_ID} (larger model, may take a few minutes)...", flush=True)
         _i2v_pipe = _load_pipe(CogVideoXImageToVideoPipeline, COGVIDEOX_I2V_MODEL_ID, is_first_pipe=False)
         print("I2V model loaded.", flush=True)
     return _i2v_pipe
@@ -472,7 +511,7 @@ def generate(mode, prompt_text, image, steps, seed, duration_seconds):
         for i in range(total_segments):
             seg_generator = torch.Generator(device="cuda").manual_seed(seed + i)
             if i == 0 and mode == "Text-to-Video":
-                frames = t2v_pipe(
+                frames = get_t2v_pipe()(
                     prompt=full_prompt,
                     negative_prompt=NEGATIVE_PROMPT,
                     num_frames=NUM_FRAMES,
