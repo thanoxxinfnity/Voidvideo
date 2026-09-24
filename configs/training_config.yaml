@@ -19,10 +19,13 @@ t2v:
   train_batch_size: 1
   gradient_accumulation_steps: 4
   gradient_checkpointing: true
-  mixed_precision: "bf16"   # "fp16" if your GPU lacks bf16 support (e.g. older T4 setups)
+  # fp16, not bf16: Kaggle's T4s lack native bf16, and under bf16 PyTorch's
+  # memory-efficient attention kernel is unavailable on them, so SDPA falls back
+  # to materializing the full attention matrix (~70GB at 480x720x49 frames).
+  mixed_precision: "fp16"
   use_8bit_adam: true
   checkpointing_steps: 250
-  validation_steps: 250
+  validation_steps: 0      # disabled on T4 -- see train_lora.py
   validation_prompt: "a hand-drawn anime girl walking through a rain-soaked street at night, traditional 2D animation, natural line-art, smooth timing"
   seed: 42
 
@@ -43,10 +46,10 @@ i2v:
   train_batch_size: 1
   gradient_accumulation_steps: 4
   gradient_checkpointing: true
-  mixed_precision: "bf16"
+  mixed_precision: "fp16"
   use_8bit_adam: true
   checkpointing_steps: 250
-  validation_steps: 250
+  validation_steps: 0      # disabled on T4 -- see train_lora.py
   validation_prompt: "a hand-drawn anime girl walking through a rain-soaked street at night, traditional 2D animation, natural line-art, smooth timing"
   seed: 42
 

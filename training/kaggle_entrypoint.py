@@ -135,7 +135,7 @@ def main():
     run([
         "accelerate", "launch",
         "--num_processes", "1",
-        "--mixed_precision", "bf16",
+        "--mixed_precision", "fp16",
         "training/train_lora.py",
         "--task", task,
         "--config", "configs/training_config.yaml",

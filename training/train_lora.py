@@ -71,21 +71,21 @@ def load_config(path: str, task: str) -> dict:
 
 
 @torch.no_grad()
-def encode_prompt(tokenizer, text_encoder, prompts, device, max_length=226):
+def encode_prompt(tokenizer, text_encoder, prompts, out_device, max_length=226):
     inputs = tokenizer(
         prompts, padding="max_length", max_length=max_length,
         truncation=True, return_tensors="pt",
-    ).to(device)
-    return text_encoder(inputs.input_ids)[0]
+    ).to(text_encoder.device)
+    return text_encoder(inputs.input_ids)[0].to(out_device)
 
 
 @torch.no_grad()
-def encode_video(vae, pixel_values):
+def encode_video(vae, pixel_values, out_device):
     # pixel_values: (B, T, C, H, W) in [-1, 1] -> vae expects (B, C, T, H, W)
-    pixel_values = pixel_values.permute(0, 2, 1, 3, 4).to(dtype=vae.dtype)
+    pixel_values = pixel_values.permute(0, 2, 1, 3, 4).to(device=vae.device, dtype=vae.dtype)
     latent_dist = vae.encode(pixel_values).latent_dist
     latents = latent_dist.sample() * vae.config.scaling_factor
-    return latents.permute(0, 2, 1, 3, 4)  # (B, T, C, H, W) latent space
+    return latents.permute(0, 2, 1, 3, 4).to(out_device)  # (B, T, C, H, W) latent space
 
 
 def main():
@@ -105,10 +105,21 @@ def main():
 
     model_id = cfg["base_model_id"]
     tokenizer = T5Tokenizer.from_pretrained(model_id, subfolder="tokenizer")
-    text_encoder = T5EncoderModel.from_pretrained(model_id, subfolder="text_encoder", torch_dtype=weight_dtype)
-    vae = AutoencoderKLCogVideoX.from_pretrained(model_id, subfolder="vae", torch_dtype=weight_dtype)
+    # T5 is notorious for overflowing to NaN in fp16, so it stays bf16 even
+    # when training runs fp16; it only encodes ~226 text tokens, so the T4's
+    # missing native bf16 support costs speed there, not memory. The VAE stays
+    # fp32 for the same overflow reason (fp16 VAE decode went NaN/white on T4
+    # in the inference studio) -- it's small, so fp32 is cheap.
+    text_encoder = T5EncoderModel.from_pretrained(model_id, subfolder="text_encoder", torch_dtype=torch.bfloat16)
+    vae = AutoencoderKLCogVideoX.from_pretrained(model_id, subfolder="vae", torch_dtype=torch.float32)
+    vae.enable_slicing()
+    vae.enable_tiling()
+    # Frozen base weights in the training compute dtype (the trainable LoRA
+    # params are upcast to fp32 below by cast_training_params). fp32 here
+    # alone was ~6.8GB, and together with T5-XXL (~9.5GB) that exceeded a
+    # single T4 before a single step ran.
     transformer = CogVideoXTransformer3DModel.from_pretrained(
-        model_id, subfolder="transformer", torch_dtype=torch.float32
+        model_id, subfolder="transformer", torch_dtype=weight_dtype
     )
     scheduler = CogVideoXDPMScheduler.from_pretrained(model_id, subfolder="scheduler")
 
@@ -164,8 +175,19 @@ def main():
     transformer, optimizer, dataloader, lr_scheduler = accelerator.prepare(
         transformer, optimizer, dataloader, lr_scheduler
     )
-    text_encoder.to(accelerator.device)
-    vae.to(accelerator.device)
+    # Training is single-process (see kaggle_entrypoint.py), so a second GPU
+    # would otherwise sit idle. Put the frozen encoders there and leave the
+    # primary GPU entirely to the transformer + its activations. With only
+    # one GPU, keep the VAE on it but run T5 on CPU -- T5-XXL alone is ~9.5GB
+    # and can't share one T4 with the transformer.
+    if torch.cuda.device_count() > 1 and accelerator.num_processes == 1:
+        aux_device = torch.device("cuda", (accelerator.device.index or 0) + 1)
+        text_encoder.to(aux_device)
+        vae.to(aux_device)
+    else:
+        text_encoder.to("cpu")
+        vae.to(accelerator.device)
+    print(f"transformer on {accelerator.device}, text encoder on {text_encoder.device}, VAE on {vae.device}")
 
     output_dir = REPO_ROOT / cfg["output_dir"]
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -176,10 +198,10 @@ def main():
     while global_step < cfg["max_train_steps"]:
         for batch in dataloader:
             with accelerator.accumulate(transformer):
-                pixel_values = torch.stack([b["frames"] for b in batch]).to(accelerator.device)
+                pixel_values = torch.stack([b["frames"] for b in batch])
                 captions = [b["caption"] for b in batch]
 
-                latents = encode_video(vae, pixel_values).to(dtype=weight_dtype)
+                latents = encode_video(vae, pixel_values, accelerator.device).to(dtype=weight_dtype)
                 prompt_embeds = encode_prompt(tokenizer, text_encoder, captions, accelerator.device)
 
                 noise = torch.randn_like(latents)
@@ -216,8 +238,18 @@ def main():
                 if accelerator.is_main_process and global_step % cfg["checkpointing_steps"] == 0:
                     save_checkpoint(accelerator, transformer, output_dir, global_step)
 
-                if accelerator.is_main_process and global_step % cfg["validation_steps"] == 0:
-                    run_validation(cfg, model_id, transformer, accelerator, output_dir, global_step, args.task)
+                # validation_steps: 0 disables it. run_validation builds a
+                # whole second pipeline with enable_model_cpu_offload() around
+                # the *live* training transformer (which would leave it on CPU
+                # afterwards) and reloads a second T5 copy -- neither fits
+                # alongside training on a T4. Checkpoints are the real output;
+                # sample them afterwards in the Gradio studio instead.
+                if (accelerator.is_main_process and cfg.get("validation_steps")
+                        and global_step % cfg["validation_steps"] == 0):
+                    try:
+                        run_validation(cfg, model_id, transformer, accelerator, output_dir, global_step, args.task)
+                    except Exception as e:
+                        print(f"Validation at step {global_step} failed, continuing training: {e}")
 
             if global_step >= cfg["max_train_steps"]:
                 break
