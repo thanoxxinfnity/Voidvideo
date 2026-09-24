@@ -55,5 +55,7 @@ i2v:
 
 dataset:
   metadata_file: "data/processed/metadata.jsonl"
-  video_root: "data/processed/clips"
+  # metadata.jsonl rows already carry the "clips/" prefix (see prepare_dataset.py),
+  # so the root is data/processed itself -- pointing it at clips/ doubled it.
+  video_root: "data/processed"
   caption_dropout: 0.1   # fraction of steps trained with empty caption, improves classifier-free guidance quality
