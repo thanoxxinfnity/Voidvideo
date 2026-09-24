@@ -74,38 +74,56 @@ def interpolate_to_output_fps(src_path: str) -> str:
         return src_path
 
 COGVIDEOX_MODEL_ID = "THUDM/CogVideoX-2b"
-# Cut from 49 (the training config's frame count) after three straight OOM
-# crashes on this 14.5GB T4 -- fewer frames means less resident at once
-# throughout the whole pipeline, not just in the attention op. ~3.1s clips
-# at this fps instead of ~6.1s; shorter but actually generates.
-NUM_FRAMES = 25
-FPS = 8
-# Reduced from 480x720: the real OOM wasn't about model weight dtype at all
-# (bf16 correctly halved weight memory to ~6GB) -- it was CogVideoX's
-# spatio-temporal attention trying to allocate a single 70GB tensor, which
-# scales with total tokens (frames x spatial patches) and has nothing to do
-# with dtype. Smaller resolution directly shrinks that token count.
-HEIGHT = 256
-WIDTH = 384
-
-# I2V uses the 5B model (2.5x the 2B T2V model's params) -- loaded lazily
-# (only on first Image-to-Video generate call) so a T2V-only session never
-# pays its ~20GB download/load cost.
-#
-# Unlike the T2V pipeline, diffusers hard-locks CogVideoXImageToVideoPipeline
-# for THUDM/CogVideoX-5b-I2V to its trained 480x720 resolution -- passing any
-# other height/width raises ValueError outright, so there is no smaller
-# low-VRAM resolution option here the way there is for T2V. 480x720 is the
-# exact resolution that OOM'd the *smaller* 2B T2V model on this same T4
-# before it was cut down to 256x384, so the only knob left to compensate is
-# frame count: cut hard, to the minimum CogVideoX's causal VAE accepts
-# (temporal compression needs frames = 4k+1), rather than the 17 used for
-# T2V-style low-VRAM segments.
 COGVIDEOX_I2V_MODEL_ID = "THUDM/CogVideoX-5b-I2V"
-I2V_NUM_FRAMES = 9
+FPS = 8
 I2V_FPS = 8
-I2V_HEIGHT = 480
-I2V_WIDTH = 720
+
+# A single T4 only has ~14.5GB usable, which forced resolution/frame cuts
+# so aggressive (256x384, 25 frames) that CogVideoX -- trained at 480x720 --
+# produced pure noise/near-black garbage instead of a real scene: not a
+# crash, just badly out-of-distribution. Kaggle sessions are sometimes
+# allocated 2 GPUs though (T4 x2 = ~29GB combined), which is enough to run
+# at the model's actual trained resolution via device_map sharding instead
+# of squeezing one GPU. Detected once at import time and used for every
+# generate() call after.
+NUM_GPUS = torch.cuda.device_count()
+print(f"Detected {NUM_GPUS} GPU(s) for generation.", flush=True)
+MULTI_GPU = NUM_GPUS >= 2
+# Set for real once _load_pipe's T2V load below either succeeds with
+# device_map sharding or falls back -- resolution/frame settings key off
+# this actual outcome, not just the GPU count, so a failed device_map
+# attempt can't leave the single-GPU fallback path holding resolution
+# settings sized for two GPUs (which would just OOM there instead).
+MULTI_GPU_ACTIVE = False
+
+
+def _set_generation_settings(multi_gpu_active: bool):
+    global HEIGHT, WIDTH, NUM_FRAMES, I2V_NUM_FRAMES, I2V_HEIGHT, I2V_WIDTH
+    I2V_HEIGHT, I2V_WIDTH = 480, 720  # fixed by the CogVideoX-5b-I2V checkpoint regardless
+    if multi_gpu_active:
+        # Native training-config resolution/frame count -- no downscaling
+        # needed once the model is sharded across both GPUs instead of
+        # squeezed onto one.
+        HEIGHT, WIDTH = 480, 720
+        NUM_FRAMES = 49
+        I2V_NUM_FRAMES = 49
+    else:
+        # Single-GPU fallback: same crash-safe low-VRAM settings as before.
+        # This resolution is below CogVideoX's trained 480x720, which trades
+        # generation quality for not OOM-ing -- see MULTI_GPU_ACTIVE above.
+        HEIGHT, WIDTH = 256, 384
+        NUM_FRAMES = 25
+        # CogVideoXImageToVideoPipeline hard-locks THUDM/CogVideoX-5b-I2V to
+        # its trained 480x720 -- passing any other height/width raises
+        # ValueError, so there's no lower-VRAM resolution option here the way
+        # there is for T2V. That resolution alone OOM'd the *smaller* 2B T2V
+        # model on one T4, so the only knob left on a single GPU is frame
+        # count: cut to the minimum CogVideoX's causal VAE accepts (temporal
+        # compression needs frames = 4k+1).
+        I2V_NUM_FRAMES = 9
+
+
+_set_generation_settings(MULTI_GPU)  # provisional; corrected after the T2V load attempt below
 
 STYLE_SUFFIX = (
     ", modern 2D anime film style, fully colored with natural cel shading and "
@@ -277,9 +295,10 @@ print(f"Loading {COGVIDEOX_MODEL_ID}...", flush=True)
 # native bf16 tensor cores so this may compute a bit slower than fp16, but
 # that's a fine tradeoff for actually fitting and not crashing.
 def _harden_pipe(p):
-    """Apply the same low-VRAM tricks (bf16 already set at from_pretrained)
-    to any CogVideoX pipeline instance -- shared between T2V and I2V so the
-    I2V path gets the identical crash-safety as the battle-tested T2V one."""
+    """Single-GPU low-VRAM path: squeeze one pipeline instance onto one T4
+    via sequential CPU offload + slicing/tiling. Used only when MULTI_GPU is
+    False -- shared between T2V and I2V so the I2V path gets the identical
+    crash-safety as the battle-tested T2V one."""
     p.enable_sequential_cpu_offload()
     p.vae.enable_slicing()
     p.vae.enable_tiling()
@@ -290,18 +309,53 @@ def _harden_pipe(p):
     return p
 
 
+def _load_pipe(pipe_cls, model_id, is_first_pipe: bool):
+    """Loads a CogVideoX pipeline using whichever VRAM strategy fits the
+    number of GPUs this Kaggle session actually got. Multi-GPU sharding
+    (device_map) is what makes running at the model's real trained
+    resolution possible at all -- squeezed onto one 14.5GB T4 that
+    resolution flat-out OOMs, which is why the single-GPU path exists as a
+    (lower-quality, since it runs below the trained resolution) fallback
+    rather than the primary path.
+
+    `is_first_pipe` (True for the T2V pipe loaded at import time) is what
+    updates the global generation settings to match what actually happened,
+    since MULTI_GPU (GPU count) and MULTI_GPU_ACTIVE (device_map genuinely
+    loaded) can disagree if sharding itself fails."""
+    if MULTI_GPU:
+        try:
+            pipe = pipe_cls.from_pretrained(model_id, torch_dtype=torch.bfloat16, device_map="balanced")
+            pipe.vae.enable_slicing()
+            pipe.vae.enable_tiling()
+            print(f"{model_id}: loaded sharded across {NUM_GPUS} GPUs (device_map='balanced').", flush=True)
+            if is_first_pipe:
+                global MULTI_GPU_ACTIVE
+                MULTI_GPU_ACTIVE = True
+                _set_generation_settings(True)
+            return pipe
+        except Exception as e:
+            print(
+                f"{model_id}: multi-GPU device_map load failed ({type(e).__name__}: {e}) -- "
+                "falling back to single-GPU low-VRAM settings for this pipeline.",
+                flush=True,
+            )
+    if is_first_pipe:
+        _set_generation_settings(False)
+    pipe = pipe_cls.from_pretrained(model_id, torch_dtype=torch.bfloat16)
+    return _harden_pipe(pipe)
+
+
 print(f"Loading {COGVIDEOX_MODEL_ID}...", flush=True)
 # Whole pipeline in bfloat16 -- no mixed dtypes, same memory footprint as
-# fp16 (float32 just OOM'd on this 14.5GB T4: "Tried to allocate 20.00 MiB
-# ... 14.54 GiB memory in use"). bf16 has the same wide exponent range as
-# fp32 (unlike fp16), which is what actually avoids the VAE decode
+# fp16 (float32 just OOM'd on a single 14.5GB T4: "Tried to allocate 20.00
+# MiB ... 14.54 GiB memory in use"). bf16 has the same wide exponent range
+# as fp32 (unlike fp16), which is what actually avoids the VAE decode
 # overflowing to NaN/white on T4-class GPUs -- fp16 has a narrow exponent
 # range and overflows there, float32 fixed that but doesn't fit, and mixing
 # fp16-transformer with fp32-VAE crashed under enable_model_cpu_offload().
-# bf16 throughout sidesteps all three failure modes at once. T4 lacks
-# native bf16 tensor cores so this may compute a bit slower than fp16, but
-# that's a fine tradeoff for actually fitting and not crashing.
-t2v_pipe = _harden_pipe(CogVideoXPipeline.from_pretrained(COGVIDEOX_MODEL_ID, torch_dtype=torch.bfloat16))
+# bf16 throughout sidesteps all three failure modes at once regardless of
+# which VRAM strategy below actually ends up used.
+t2v_pipe = _load_pipe(CogVideoXPipeline, COGVIDEOX_MODEL_ID, is_first_pipe=True)
 print("T2V model loaded. Launching Gradio...", flush=True)
 
 # I2V (5B, ~2.5x the T2V model) is NOT loaded here -- only on first actual
@@ -315,9 +369,7 @@ def get_i2v_pipe():
     global _i2v_pipe
     if _i2v_pipe is None:
         print(f"First Image-to-Video request -- loading {COGVIDEOX_I2V_MODEL_ID} (larger model, may take a few minutes)...", flush=True)
-        _i2v_pipe = _harden_pipe(
-            CogVideoXImageToVideoPipeline.from_pretrained(COGVIDEOX_I2V_MODEL_ID, torch_dtype=torch.bfloat16)
-        )
+        _i2v_pipe = _load_pipe(CogVideoXImageToVideoPipeline, COGVIDEOX_I2V_MODEL_ID, is_first_pipe=False)
         print("I2V model loaded.", flush=True)
     return _i2v_pipe
 
