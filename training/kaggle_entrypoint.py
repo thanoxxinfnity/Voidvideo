@@ -24,8 +24,10 @@ immediately before staging, so they always match the branch you're pushing
 from -- editing them here has no effect on the next push.
 """
 import os
+import shutil
 import subprocess
 import sys
+import zipfile
 from pathlib import Path
 
 REPO_GIT_URL = "https://github.com/thanoxxinfnity/Voidvideo.git"  # rewritten at push time
@@ -43,15 +45,51 @@ def run(cmd: list[str], **kwargs) -> None:
 
 
 def find_dataset_dir() -> Path:
-    candidates = [p for p in KAGGLE_INPUT.iterdir() if p.is_dir()] if KAGGLE_INPUT.exists() else []
-    if not candidates:
+    # Kaggle now mounts attached datasets nested as
+    # /kaggle/input/datasets/<owner>/<slug>/ rather than /kaggle/input/<slug>/,
+    # so the top-level child is just a parent folder with no metadata.jsonl
+    # in it. Search for the file itself instead of assuming a depth.
+    matches = sorted(KAGGLE_INPUT.rglob("metadata.jsonl")) if KAGGLE_INPUT.exists() else []
+    if not matches:
         raise RuntimeError(
-            "No dataset mounted under /kaggle/input. Attach the dataset pushed by "
-            "scripts/push_dataset_to_kaggle.py as a data source on this kernel."
+            "No metadata.jsonl found anywhere under /kaggle/input. Attach the dataset "
+            "pushed by scripts/push_dataset_to_kaggle.py as a data source on this kernel."
         )
-    if len(candidates) > 1:
-        print(f"Multiple datasets mounted, using the first: {[c.name for c in candidates]}")
-    return candidates[0]
+    if len(matches) > 1:
+        print(f"Multiple metadata.jsonl found, using the first: {[str(m) for m in matches]}")
+    return matches[0].parent
+
+
+def link_or_extract_dataset(dataset_dir: Path, processed: Path) -> None:
+    """Make `processed` hold metadata.jsonl + clips/. Kaggle usually
+    auto-extracts the uploaded clips.zip into clips/, in which case a symlink
+    is enough; if it's still a zip, /kaggle/input is read-only so extract a
+    real copy under the working dir instead."""
+    if processed.is_symlink():
+        processed.unlink()
+    elif processed.exists():
+        shutil.rmtree(processed)
+    processed.parent.mkdir(parents=True, exist_ok=True)
+
+    if (dataset_dir / "clips").is_dir():
+        processed.symlink_to(dataset_dir.resolve())
+        print(f"Linked dataset {dataset_dir} -> {processed}")
+        return
+
+    zip_path = dataset_dir / "clips.zip"
+    if not zip_path.exists():
+        raise RuntimeError(f"{dataset_dir} has metadata.jsonl but neither clips/ nor clips.zip.")
+    processed.mkdir()
+    shutil.copy(dataset_dir / "metadata.jsonl", processed / "metadata.jsonl")
+    clips_dir = processed / "clips"
+    with zipfile.ZipFile(zip_path) as zf:
+        zf.extractall(clips_dir)
+    nested = clips_dir / "clips"
+    if nested.is_dir() and not any(clips_dir.glob("*.mp4")):
+        for f in nested.iterdir():
+            f.rename(clips_dir / f.name)
+        nested.rmdir()
+    print(f"Extracted {zip_path} -> {clips_dir} ({len(list(clips_dir.glob('*.mp4')))} clips)")
 
 
 def main():
@@ -76,13 +114,7 @@ def main():
     subprocess.run(["pip", "uninstall", "-y", "-q", "torchao"], check=False)
 
     dataset_dir = find_dataset_dir()
-    processed_link = REPO_DIR / "data" / "processed"
-    if processed_link.exists() or processed_link.is_symlink():
-        processed_link.unlink() if processed_link.is_symlink() else None
-    processed_link.parent.mkdir(parents=True, exist_ok=True)
-    if not processed_link.exists():
-        processed_link.symlink_to(dataset_dir)
-    print(f"Linked dataset {dataset_dir} -> {processed_link}")
+    link_or_extract_dataset(dataset_dir, REPO_DIR / "data" / "processed")
 
     num_gpus = int(subprocess.run(
         ["python", "-c", "import torch;print(torch.cuda.device_count())"],
