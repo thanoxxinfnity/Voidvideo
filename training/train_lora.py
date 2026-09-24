@@ -174,17 +174,16 @@ def main():
     # precomputed empty-caption embedding.
     #
     # Training is single-process (see kaggle_entrypoint.py), so with 2 GPUs
-    # the encoders run on the idle second one; with one GPU, T5-XXL can't
-    # share a T4 with the transformer, so it runs on CPU instead.
-    if torch.cuda.device_count() > 1 and accelerator.num_processes == 1:
-        enc_device = torch.device("cuda", (accelerator.device.index or 0) + 1)
-        text_encoder.to(enc_device)
-        vae.to(enc_device)
-    else:
-        text_encoder.to("cpu")
-        vae.to(accelerator.device)
-    print(f"transformer on {accelerator.device}, text encoder on {text_encoder.device}, VAE on {vae.device}")
+    # the encoders can use the idle second one -- but T5-XXL (~9.5GB) and a
+    # 49-frame 480x720 fp32 VAE encode each need real headroom, and running
+    # both on GPU1 *at once* OOM'd there even though neither alone should.
+    # So they take turns: T5 encodes every caption first and is then freed
+    # before the VAE loads, rather than both sitting there through both loops.
+    multi_gpu = torch.cuda.device_count() > 1 and accelerator.num_processes == 1
+    enc_device = torch.device("cuda", (accelerator.device.index or 0) + 1) if multi_gpu else "cpu"
 
+    text_encoder.to(enc_device)
+    print(f"transformer on {accelerator.device}, text encoder on {text_encoder.device}")
     captions = sorted({row.get("caption", "") for row in dataset.rows} | {""})
     caption_index = {c: i for i, c in enumerate(captions)}
     caption_embeds = torch.cat([
@@ -192,7 +191,12 @@ def main():
     ])
     empty_caption_idx = caption_index[""]
     print(f"Precomputed {len(captions)} caption embeddings.")
+    del text_encoder
+    gc.collect()
+    torch.cuda.empty_cache()
 
+    vae.to(enc_device if multi_gpu else accelerator.device)
+    print(f"VAE on {vae.device}")
     cached = []
     for i, row in enumerate(dataset.rows):
         frames = dataset[i]["frames"].unsqueeze(0)
@@ -201,7 +205,7 @@ def main():
         if (i + 1) % 20 == 0 or i + 1 == len(dataset.rows):
             print(f"Precomputed latents {i + 1}/{len(dataset.rows)}", flush=True)
 
-    del text_encoder, vae
+    del vae
     gc.collect()
     torch.cuda.empty_cache()
 
