@@ -327,6 +327,18 @@ def _load_pipe(pipe_cls, model_id, is_first_pipe: bool):
             pipe = pipe_cls.from_pretrained(model_id, torch_dtype=torch.bfloat16, device_map="balanced")
             pipe.vae.enable_slicing()
             pipe.vae.enable_tiling()
+            # device_map only shards which GPU holds which *module* (transformer
+            # vs VAE vs text encoder) -- it does NOT split a single attention
+            # op's own activation memory across GPUs. At native 480x720/49
+            # frames that one op alone tried to allocate a 70GB tensor on
+            # whichever single GPU was running it, regardless of the other
+            # GPU's free memory. Attention slicing directly chunks that same
+            # computation to fit, independent of device placement, so it's
+            # needed here too, not just in the single-GPU fallback below.
+            try:
+                pipe.enable_attention_slicing()
+            except AttributeError:
+                pass
             print(f"{model_id}: loaded sharded across {NUM_GPUS} GPUs (device_map='balanced').", flush=True)
             if is_first_pipe:
                 global MULTI_GPU_ACTIVE
