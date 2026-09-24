@@ -90,14 +90,22 @@ WIDTH = 384
 
 # I2V uses the 5B model (2.5x the 2B T2V model's params) -- loaded lazily
 # (only on first Image-to-Video generate call) so a T2V-only session never
-# pays its ~20GB download/load cost. Kept even smaller than the T2V settings
-# above since the bigger transformer leaves less VRAM headroom on the same
-# 14.5GB T4, even with identical sequential-offload/slicing/tiling applied.
+# pays its ~20GB download/load cost.
+#
+# Unlike the T2V pipeline, diffusers hard-locks CogVideoXImageToVideoPipeline
+# for THUDM/CogVideoX-5b-I2V to its trained 480x720 resolution -- passing any
+# other height/width raises ValueError outright, so there is no smaller
+# low-VRAM resolution option here the way there is for T2V. 480x720 is the
+# exact resolution that OOM'd the *smaller* 2B T2V model on this same T4
+# before it was cut down to 256x384, so the only knob left to compensate is
+# frame count: cut hard, to the minimum CogVideoX's causal VAE accepts
+# (temporal compression needs frames = 4k+1), rather than the 17 used for
+# T2V-style low-VRAM segments.
 COGVIDEOX_I2V_MODEL_ID = "THUDM/CogVideoX-5b-I2V"
-I2V_NUM_FRAMES = 17
+I2V_NUM_FRAMES = 9
 I2V_FPS = 8
-I2V_HEIGHT = 208
-I2V_WIDTH = 304
+I2V_HEIGHT = 480
+I2V_WIDTH = 720
 
 STYLE_SUFFIX = (
     ", modern 2D anime film style, fully colored with natural cel shading and "
