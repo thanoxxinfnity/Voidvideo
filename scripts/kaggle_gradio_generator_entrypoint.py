@@ -101,16 +101,17 @@ def _set_generation_settings(multi_gpu_active: bool):
     global HEIGHT, WIDTH, NUM_FRAMES, I2V_NUM_FRAMES, I2V_HEIGHT, I2V_WIDTH
     I2V_HEIGHT, I2V_WIDTH = 480, 720  # fixed by the CogVideoX-5b-I2V checkpoint regardless
     if multi_gpu_active:
-        # Native training-config resolution (avoids the out-of-distribution
-        # noise/garbage output the low-VRAM path produced), kept even with
-        # 2 GPUs -- but frame count is still cut hard. device_map only
-        # shards which GPU holds which *module*; CogVideoX's own joint
-        # spatio-temporal attention op runs on one GPU and doesn't respect
-        # enable_attention_slicing() (a live OOM at 49 frames confirmed this
-        # -- it tried to allocate the exact same 70GB either way), so frame
-        # count is the only remaining memory knob at this resolution.
+        # Native training-config resolution and full 49-frame window for T2V.
+        # The earlier 70GB attention allocation at 49 frames was bf16 on a T4:
+        # T4s lack native bf16, so PyTorch's memory-efficient SDPA kernel is
+        # unavailable and attention falls back to materializing the full
+        # matrix. T2V now runs fp16 (CogVideoX-2B's officially recommended
+        # precision), where that kernel works and attention memory is linear.
         HEIGHT, WIDTH = 480, 720
-        NUM_FRAMES = 9
+        NUM_FRAMES = 49
+        # CogVideoX-5b-I2V is bf16-only (fp16 isn't a supported precision for
+        # the 5B checkpoints), so it still hits the math-attention fallback on
+        # a T4 and stays at the short window that's known to fit.
         I2V_NUM_FRAMES = 9
     else:
         # Single-GPU fallback: same crash-safe low-VRAM settings as before.
@@ -289,16 +290,10 @@ for _cat, _prompts in PROMPTS.items():
         CHOICES.append((label, _p))
 
 print(f"Loading {COGVIDEOX_MODEL_ID}...", flush=True)
-# Whole pipeline in bfloat16 -- no mixed dtypes, same memory footprint as
-# fp16 (float32 just OOM'd on this 14.5GB T4: "Tried to allocate 20.00 MiB
-# ... 14.54 GiB memory in use"). bf16 has the same wide exponent range as
-# fp32 (unlike fp16), which is what actually avoids the VAE decode
-# overflowing to NaN/white on T4-class GPUs -- fp16 has a narrow exponent
-# range and overflows there, float32 fixed that but doesn't fit, and mixing
-# fp16-transformer with fp32-VAE crashed under enable_model_cpu_offload().
-# bf16 throughout sidesteps all three failure modes at once. T4 lacks
-# native bf16 tensor cores so this may compute a bit slower than fp16, but
-# that's a fine tradeoff for actually fitting and not crashing.
+# The single-GPU fallback below keeps the whole pipeline in bfloat16: mixing
+# an fp16 transformer with an fp32 VAE crashed under enable_model_cpu_offload()
+# there, and fp32 throughout doesn't fit one 14.5GB T4. The multi-GPU path
+# uses per-component dtypes instead (see MULTI_GPU_DTYPES).
 def _harden_pipe(p):
     """Single-GPU low-VRAM path: squeeze one pipeline instance onto one T4
     via sequential CPU offload + slicing/tiling. Used only when MULTI_GPU is
@@ -312,6 +307,41 @@ def _harden_pipe(p):
     except AttributeError:
         pass
     return p
+
+
+# Per-component dtypes for the multi-GPU path. The VAE is fp32 in both: on a
+# T4 a bf16 VAE decode made cuDNN's conv3d fall back to an implementation
+# that tried to allocate 10GB for one small input (T4s lack native bf16), and
+# an fp16 VAE decode overflowed to NaN/white. The VAE is small, so fp32 costs
+# little. T2V (2B) runs fp16, its officially recommended precision, which
+# also enables memory-efficient attention on a T4; I2V (5B) is bf16-only.
+MULTI_GPU_DTYPES = {
+    COGVIDEOX_MODEL_ID: {"default": torch.float16, "vae": torch.float32},
+    COGVIDEOX_I2V_MODEL_ID: {"default": torch.bfloat16, "vae": torch.float32},
+}
+
+
+def cast_vae_io(vae):
+    """Let the VAE run in its own dtype inside a pipeline whose other
+    components use a different one. The stock CogVideoX pipelines hand the
+    VAE latents/images in the transformer's dtype without casting, which
+    fails on an fp32 VAE ("Input type ... and bias type (float) should be
+    the same"). Results are handed back in the caller's dtype."""
+    orig_encode, orig_decode = vae.encode, vae.decode
+
+    def encode(x, *args, **kwargs):
+        in_dtype = x.dtype
+        out = orig_encode(x.to(vae.dtype), *args, **kwargs)
+        dist = out.latent_dist
+        for name in ("parameters", "mean", "logvar", "std", "var"):
+            setattr(dist, name, getattr(dist, name).to(in_dtype))
+        return out
+
+    def decode(z, *args, **kwargs):
+        return orig_decode(z.to(vae.dtype), *args, **kwargs)
+
+    vae.encode, vae.decode = encode, decode
+    return vae
 
 
 def _load_pipe(pipe_cls, model_id, is_first_pipe: bool):
@@ -329,22 +359,17 @@ def _load_pipe(pipe_cls, model_id, is_first_pipe: bool):
     loaded) can disagree if sharding itself fails."""
     if MULTI_GPU:
         try:
-            pipe = pipe_cls.from_pretrained(model_id, torch_dtype=torch.bfloat16, device_map="balanced")
+            pipe = pipe_cls.from_pretrained(
+                model_id, torch_dtype=MULTI_GPU_DTYPES[model_id], device_map="balanced"
+            )
             pipe.vae.enable_slicing()
             pipe.vae.enable_tiling()
-            # device_map only shards which GPU holds which *module* (transformer
-            # vs VAE vs text encoder) -- it does NOT split a single attention
-            # op's own activation memory across GPUs. At native 480x720/49
-            # frames that one op alone tried to allocate a 70GB tensor on
-            # whichever single GPU was running it, regardless of the other
-            # GPU's free memory. Attention slicing directly chunks that same
-            # computation to fit, independent of device placement, so it's
-            # needed here too, not just in the single-GPU fallback below.
-            try:
-                pipe.enable_attention_slicing()
-            except AttributeError:
-                pass
-            print(f"{model_id}: loaded sharded across {NUM_GPUS} GPUs (device_map='balanced').", flush=True)
+            cast_vae_io(pipe.vae)
+            print(
+                f"{model_id}: loaded sharded across {NUM_GPUS} GPUs (device_map='balanced'), "
+                f"transformer {pipe.transformer.dtype}, VAE {pipe.vae.dtype}.",
+                flush=True,
+            )
             if is_first_pipe:
                 global MULTI_GPU_ACTIVE
                 MULTI_GPU_ACTIVE = True
@@ -364,15 +389,6 @@ def _load_pipe(pipe_cls, model_id, is_first_pipe: bool):
 
 import gc  # noqa: E402
 
-# Whole pipeline in bfloat16 -- no mixed dtypes, same memory footprint as
-# fp16 (float32 just OOM'd on a single 14.5GB T4: "Tried to allocate 20.00
-# MiB ... 14.54 GiB memory in use"). bf16 has the same wide exponent range
-# as fp32 (unlike fp16), which is what actually avoids the VAE decode
-# overflowing to NaN/white on T4-class GPUs -- fp16 has a narrow exponent
-# range and overflows there, float32 fixed that but doesn't fit, and mixing
-# fp16-transformer with fp32-VAE crashed under enable_model_cpu_offload().
-# bf16 throughout sidesteps all three failure modes at once regardless of
-# which VRAM strategy below actually ends up used.
 print(f"Probing GPU layout with {COGVIDEOX_MODEL_ID}...", flush=True)
 _probe_pipe = _load_pipe(CogVideoXPipeline, COGVIDEOX_MODEL_ID, is_first_pipe=True)
 del _probe_pipe
