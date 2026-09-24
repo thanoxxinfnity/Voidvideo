@@ -79,10 +79,20 @@ def main():
         capture_output=True, text=True,
     ).stdout.strip() or "0")
     print(f"Detected {num_gpus} GPU(s).")
+    if num_gpus > 1:
+        print(
+            f"{num_gpus} GPUs available, but forcing --num_processes 1 anyway: "
+            "data-parallel launch means every process loads its own full copy "
+            "of the model during the CPU-side deserialization phase before "
+            "anything moves to a GPU, and two of those at once on a Kaggle "
+            "instance's system RAM triggered an OOM-kill (SIGKILL, no Python "
+            "traceback) partway through loading on a 2-GPU run. This LoRA "
+            "fine-tune on ~140 clips doesn't need multi-GPU scaling anyway."
+        )
 
     run([
         "accelerate", "launch",
-        "--num_processes", str(max(1, num_gpus)),
+        "--num_processes", "1",
         "--mixed_precision", "bf16",
         "training/train_lora.py",
         "--task", task,
