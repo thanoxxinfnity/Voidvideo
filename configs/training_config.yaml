@@ -24,7 +24,11 @@ t2v:
   # to materializing the full attention matrix (~70GB at 480x720x49 frames).
   mixed_precision: "fp16"
   use_8bit_adam: true
-  checkpointing_steps: 250
+  # 250 was too sparse: gradient checkpointing + native 49-frame/480x720 fp16
+  # on a T4 made a single step slow enough that a live run burned most of its
+  # 12-hour Kaggle session without ever reaching step 250, so a mid-run kill
+  # would have lost everything, precompute included, with zero checkpoints.
+  checkpointing_steps: 25
   validation_steps: 0      # disabled on T4 -- see train_lora.py
   validation_prompt: "a hand-drawn anime girl walking through a rain-soaked street at night, traditional 2D animation, natural line-art, smooth timing"
   seed: 42
@@ -48,7 +52,7 @@ i2v:
   gradient_checkpointing: true
   mixed_precision: "fp16"
   use_8bit_adam: true
-  checkpointing_steps: 250
+  checkpointing_steps: 25
   validation_steps: 0      # disabled on T4 -- see train_lora.py
   validation_prompt: "a hand-drawn anime girl walking through a rain-soaked street at night, traditional 2D animation, natural line-art, smooth timing"
   seed: 42
