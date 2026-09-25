@@ -15,7 +15,15 @@ t2v:
   learning_rate: 1.0e-4
   lr_scheduler: "cosine"
   lr_warmup_steps: 100
-  max_train_steps: 3000
+  # A live run measured ~200s/step here (gradient checkpointing + native
+  # 49-frame/480x720 fp16 transformer forward+backward on a single T4), so
+  # 3000 steps is ~166 GPU-hours -- ~15+ relaunches even before Kaggle's
+  # weekly GPU quota is factored in. 1000 is still generous for a 143-clip
+  # LoRA (common guidance is a few hundred to ~1000 steps) and reachable in
+  # a handful of relaunches via scripts/push_checkpoint_to_kaggle.py's resume
+  # relay. Note --resume_from_checkpoint only restores LoRA weights, not
+  # global_step/optimizer state, so this is a per-run budget, not cumulative.
+  max_train_steps: 1000
   train_batch_size: 1
   gradient_accumulation_steps: 4
   gradient_checkpointing: true
@@ -46,7 +54,7 @@ i2v:
   learning_rate: 1.0e-4
   lr_scheduler: "cosine"
   lr_warmup_steps: 100
-  max_train_steps: 3000
+  max_train_steps: 1000     # see t2v's max_train_steps comment
   train_batch_size: 1
   gradient_accumulation_steps: 4
   gradient_checkpointing: true

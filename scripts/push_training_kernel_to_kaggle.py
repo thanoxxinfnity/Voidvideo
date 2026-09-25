@@ -60,6 +60,25 @@ def main():
     if not kernel_slug or not dataset_slug:
         print("KAGGLE_KERNEL_SLUG and KAGGLE_DATASET_SLUG must be set in .env.", file=sys.stderr)
         sys.exit(1)
+    from kaggle.api.kaggle_api_extended import KaggleApi
+
+    api = KaggleApi()
+    api.authenticate()
+
+    checkpoint_dataset_slug = os.environ.get("KAGGLE_CHECKPOINT_DATASET_SLUG")
+    dataset_sources = [dataset_slug]
+    if checkpoint_dataset_slug:
+        try:
+            api.dataset_status(checkpoint_dataset_slug)
+            dataset_sources.append(checkpoint_dataset_slug)
+            print(f"Attaching checkpoint dataset {checkpoint_dataset_slug} for resume.")
+        except Exception:
+            print(
+                f"KAGGLE_CHECKPOINT_DATASET_SLUG={checkpoint_dataset_slug} is set but doesn't exist yet "
+                "on Kaggle -- run scripts/push_checkpoint_to_kaggle.py first. Training from scratch this run."
+            )
+    else:
+        print("No KAGGLE_CHECKPOINT_DATASET_SLUG set -- this run will train from scratch.")
 
     ref = args.ref or current_git_ref()
     remote_url = current_git_remote_url()
@@ -102,17 +121,12 @@ def main():
         "is_private": True,
         "enable_gpu": True,
         "enable_internet": True,  # required for pip install + git clone
-        "dataset_sources": [dataset_slug],
+        "dataset_sources": dataset_sources,
         "competition_sources": [],
         "kernel_sources": [],
         "model_sources": [],
     }
     (STAGING_DIR / "kernel-metadata.json").write_text(json.dumps(kernel_metadata, indent=2))
-
-    from kaggle.api.kaggle_api_extended import KaggleApi
-
-    api = KaggleApi()
-    api.authenticate()
 
     print(f"Pushing kernel {kernel_slug} (task={args.task}, ref={ref}) to Kaggle...")
     api.kernels_push(str(STAGING_DIR))

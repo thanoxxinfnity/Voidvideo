@@ -49,8 +49,16 @@ def main():
 
         if status == "complete":
             break
-        if status in ("error", "cancelAcknowledged"):
-            print(f"Kernel did not complete successfully (status={status}). Check logs at "
+        if status == "cancelAcknowledged":
+            # Expected outcome, not a failure: Kaggle's 12h hard session limit
+            # kills long training runs before they reach max_train_steps, but
+            # checkpointing_steps still saved intermediate checkpoints worth
+            # downloading and resuming from (see push_checkpoint_to_kaggle.py).
+            print(f"Kernel was cancelled (likely the 12h session limit), not finished cleanly. "
+                  f"Downloading anyway to check for a usable checkpoint.")
+            break
+        if status == "error":
+            print(f"Kernel errored out (status={status}). Check logs at "
                   f"https://www.kaggle.com/code/{kernel_slug}", file=sys.stderr)
             sys.exit(1)
         if not args.wait:

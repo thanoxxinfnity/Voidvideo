@@ -92,6 +92,23 @@ def link_or_extract_dataset(dataset_dir: Path, processed: Path) -> None:
     print(f"Extracted {zip_path} -> {clips_dir} ({len(list(clips_dir.glob('*.mp4')))} clips)")
 
 
+def find_resume_checkpoint() -> Path | None:
+    # scripts/push_checkpoint_to_kaggle.py pushes a checkpoint dir (containing
+    # lora_weights.pt) as its own dataset, attached alongside the clips
+    # dataset. Kaggle's 12h session limit means most runs never reach
+    # max_train_steps in one go, so resuming from the last run's checkpoint
+    # (rather than restarting cold every time) is the normal path, not a
+    # fallback.
+    if not KAGGLE_INPUT.exists():
+        return None
+    matches = sorted(KAGGLE_INPUT.rglob("lora_weights.pt"))
+    if not matches:
+        return None
+    if len(matches) > 1:
+        print(f"Multiple lora_weights.pt found, using the first: {[str(m) for m in matches]}")
+    return matches[0].parent
+
+
 def main():
     task = os.environ.get("TRAIN_TASK", TRAIN_TASK)
     assert task in ("t2v", "i2v"), f"Unknown TRAIN_TASK={task}"
@@ -132,14 +149,21 @@ def main():
             "fine-tune on ~140 clips doesn't need multi-GPU scaling anyway."
         )
 
-    run([
+    train_cmd = [
         "accelerate", "launch",
         "--num_processes", "1",
         "--mixed_precision", "fp16",
         "training/train_lora.py",
         "--task", task,
         "--config", "configs/training_config.yaml",
-    ])
+    ]
+    resume_dir = find_resume_checkpoint()
+    if resume_dir:
+        print(f"Found checkpoint dataset, resuming from {resume_dir}")
+        train_cmd += ["--resume_from_checkpoint", str(resume_dir)]
+    else:
+        print("No checkpoint dataset attached -- training from scratch.")
+    run(train_cmd)
 
     # Mirror outputs to /kaggle/working root so they show up in the kernel's Output tab
     # even if REPO_DIR itself isn't surfaced.
