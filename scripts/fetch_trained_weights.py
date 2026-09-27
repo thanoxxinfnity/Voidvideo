@@ -43,13 +43,16 @@ def main():
 
     start = time.time()
     while True:
+        # kernels_status() returns an ApiGetKernelSessionStatusResponse object
+        # (a KernelWorkerStatus enum under .status), not a dict -- .get(...)
+        # raises AttributeError and was silently never reached before.
         status_resp = api.kernels_status(kernel_slug)
-        status = status_resp.get("status", "unknown")
+        status = status_resp.status.name
         print(f"Kernel {kernel_slug} status: {status}")
 
-        if status == "complete":
+        if status == "COMPLETE":
             break
-        if status == "cancelAcknowledged":
+        if status == "CANCEL_ACKNOWLEDGED":
             # Expected outcome, not a failure: Kaggle's 12h hard session limit
             # kills long training runs before they reach max_train_steps, but
             # checkpointing_steps still saved intermediate checkpoints worth
@@ -57,7 +60,7 @@ def main():
             print(f"Kernel was cancelled (likely the 12h session limit), not finished cleanly. "
                   f"Downloading anyway to check for a usable checkpoint.")
             break
-        if status == "error":
+        if status == "ERROR":
             print(f"Kernel errored out (status={status}). Check logs at "
                   f"https://www.kaggle.com/code/{kernel_slug}", file=sys.stderr)
             sys.exit(1)
