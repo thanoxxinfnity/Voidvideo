@@ -63,3 +63,4 @@ caption-studio/dataset.zip
 
 # --- Jupyter ---
 .ipynb_checkpoints/
+kaggle_checkpoint_staging/

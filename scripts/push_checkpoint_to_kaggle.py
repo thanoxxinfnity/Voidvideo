@@ -31,11 +31,13 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 def latest_checkpoint_dir(output_dir: Path) -> Path:
+    # save_checkpoint() in train_lora.py names dirs "final" or "step-<N>",
+    # never "checkpoint-<N>".
     final = output_dir / "final"
     if final.is_dir() and (final / "lora_weights.pt").exists():
         return final
     candidates = [
-        d for d in output_dir.glob("checkpoint-*")
+        d for d in output_dir.glob("step-*")
         if d.is_dir() and (d / "lora_weights.pt").exists()
     ]
     if not candidates:

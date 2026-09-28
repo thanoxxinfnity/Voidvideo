@@ -87,7 +87,16 @@ def main():
             zf.extractall(download_dir)
         zpath.unlink()
 
-    src_outputs = download_dir / "outputs"
+    # kaggle_entrypoint.py mirrors REPO_DIR/outputs to WORKING_DIR/outputs
+    # (a top-level "outputs") only after training finishes normally -- a run
+    # killed mid-training by the 12h session limit never reaches that step,
+    # so the real checkpoints are still wherever training wrote them:
+    # nested at <cloned-repo-dir>/outputs/. Search for either.
+    candidates = [
+        d for d in download_dir.rglob("outputs")
+        if d.is_dir() and any(d.glob("lora_*/*/lora_weights.pt"))
+    ]
+    src_outputs = min(candidates, key=lambda d: len(d.parts)) if candidates else download_dir / "outputs"
     if src_outputs.exists():
         for item in src_outputs.iterdir():
             dest = MODELS_DIR / item.name
