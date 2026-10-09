@@ -15,6 +15,7 @@ For each category:
 Usage:
     python scripts/prepare_dataset.py --task t2v
     python scripts/balance_metadata.py --cap 110 --max-repeat 2
+    python scripts/balance_metadata.py --target 110   # exactly 110 rows per category
 """
 import argparse
 import collections
@@ -34,6 +35,10 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--cap", type=int, default=110, help="max rows per category per run")
     parser.add_argument("--max-repeat", type=int, default=2, help="max times a clip is repeated")
+    parser.add_argument("--target", type=int, default=0,
+                        help="if set, every category (incl. other) gets exactly this many rows: "
+                             "larger ones are sampled, smaller ones repeated (whole copies + random remainder), "
+                             "ignoring --cap/--max-repeat")
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
@@ -48,7 +53,10 @@ def main():
     print(f"{'category':18} {'clips':>6} -> {'rows':>5}")
     for cat in sorted(groups):
         items = groups[cat]
-        if len(items) > args.cap:
+        if args.target:
+            full, rem = divmod(args.target, len(items))
+            chosen = items * full + rng.sample(items, rem) if full else rng.sample(items, args.target)
+        elif len(items) > args.cap:
             chosen = rng.sample(items, args.cap)
         else:
             chosen = list(items)
