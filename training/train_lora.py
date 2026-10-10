@@ -26,8 +26,10 @@ CogVideoXImageToVideoPipeline uses at inference time.
 import argparse
 import gc
 import math
+import hashlib
 import os
 import random
+import time
 from pathlib import Path
 
 import torch
@@ -197,20 +199,92 @@ def main():
 
     vae.to(enc_device if multi_gpu else accelerator.device)
     print(f"VAE on {vae.device}")
-    cached = []
+    # --- Latent cache ---------------------------------------------------
+    # Encoding a 49-frame 720x480 clip through the fp32 tiled VAE takes ~70s
+    # on a T4, so a full pass over a few hundred clips can eat an entire 12h
+    # Kaggle session and never reach a training step (that is exactly what
+    # happened to a 770-row run: 585/770 latents, 0 steps). Three fixes:
+    #   1. Encode each *unique video* once -- balanced metadata repeats rows
+    #      for small categories, and repeats just reuse the same tensor.
+    #   2. Persist every encoded latent to LATENT_CACHE_DIR (and look in
+    #      LATENT_CACHE_SEED_DIR, a previously pushed cache dataset) so later
+    #      sessions skip the work entirely.
+    #   3. Stop encoding after PRECOMPUTE_BUDGET_SEC and train on what is
+    #      cached; clips are encoded round-robin by category so a partial
+    #      cache stays category-balanced and the rest finishes next session.
+    t_start = time.time()
+    budget = float(os.environ.get("PRECOMPUTE_BUDGET_SEC", 7 * 3600))
+    cache_dir = Path(os.environ.get("LATENT_CACHE_DIR", REPO_ROOT / "outputs" / "latent_cache"))
+    seed_env = os.environ.get("LATENT_CACHE_SEED_DIR")
+    if seed_env:
+        seed_dir = Path(seed_env)
+    else:
+        # Kaggle mounts attached datasets under /kaggle/input/<slug> or
+        # /kaggle/input/datasets/<owner>/<slug> depending on the image.
+        found = sorted(Path("/kaggle/input").glob("**/voidvideo-latent-cache-*")) if Path("/kaggle/input").exists() else []
+        seed_dir = found[0] if found else Path("/nonexistent-latent-seed")
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    def cache_name(video: str) -> str:
+        return hashlib.sha1(video.encode()).hexdigest()[:16] + ".pt"
+
+    def find_cached(video: str):
+        for d in (cache_dir, seed_dir):
+            f = d / cache_name(video)
+            if f.exists():
+                return f
+        return None
+
+    def category(video: str) -> str:
+        name = Path(video).name
+        return name.split("__")[0] if "__" in name else "other"
+
+    unique = {}
     for i, row in enumerate(dataset.rows):
+        unique.setdefault(row["video"], i)
+    by_cat = {}
+    for video, i in unique.items():
+        by_cat.setdefault(category(video), []).append((video, i))
+    order = []
+    while any(by_cat.values()):
+        for cat in sorted(by_cat):
+            if by_cat[cat]:
+                order.append(by_cat[cat].pop(0))
+
+    latents_by_video = {}
+    encoded_now = 0
+    for n, (video, i) in enumerate(order):
+        f = find_cached(video)
+        if f is not None:
+            latents_by_video[video] = torch.load(f, map_location="cpu").to(weight_dtype)
+            continue
+        if time.time() - t_start > budget:
+            continue  # out of encode budget this session; next session picks these up
         frames = dataset[i]["frames"].unsqueeze(0)
         latents = encode_video(vae, frames, "cpu").to(weight_dtype)[0]
-        cached.append((latents, caption_index[row.get("caption", "")]))
+        latents_by_video[video] = latents
+        torch.save(latents.cpu(), cache_dir / cache_name(video))
+        encoded_now += 1
         # A 49-frame 480x720 fp32 tiled encode is a large, oddly-shaped
-        # allocation; repeating it 143 times without a cache clear let the
-        # allocator's free blocks fragment until an encode could no longer
-        # find a big-enough contiguous span and fell back to slow retries --
-        # a live run stalled in exactly this loop with no error, no progress,
-        # and no crash for 15+ minutes.
+        # allocation; repeating it without a cache clear let the allocator's
+        # free blocks fragment until an encode could no longer find a
+        # big-enough contiguous span and fell back to slow retries -- a live
+        # run stalled in exactly this loop with no error and no progress.
         torch.cuda.empty_cache()
-        if (i + 1) % 5 == 0 or i + 1 == len(dataset.rows):
-            print(f"Precomputed latents {i + 1}/{len(dataset.rows)}", flush=True)
+        if encoded_now % 5 == 0:
+            print(f"Encoded {encoded_now} new latents ({len(latents_by_video)}/{len(order)} unique clips cached)", flush=True)
+
+    cached = [
+        (latents_by_video[row["video"]], caption_index[row.get("caption", "")])
+        for row in dataset.rows if row["video"] in latents_by_video
+    ]
+    print(
+        f"Latent cache: {len(latents_by_video)}/{len(order)} unique clips ready "
+        f"({encoded_now} encoded this session); training on {len(cached)}/{len(dataset.rows)} metadata rows.",
+        flush=True,
+    )
+    if not cached:
+        raise RuntimeError("No latents available to train on (encode budget too small?).")
 
     del vae
     gc.collect()

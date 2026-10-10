@@ -92,14 +92,22 @@ def main():
     # killed mid-training by the 12h session limit never reaches that step,
     # so the real checkpoints are still wherever training wrote them:
     # nested at <cloned-repo-dir>/outputs/. Search for either.
+    # A session can also end with only a latent cache and no checkpoint yet
+    # (long encode phase), so a dir with latents alone counts too.
     candidates = [
         d for d in download_dir.rglob("outputs")
-        if d.is_dir() and any(d.glob("lora_*/*/lora_weights.pt"))
+        if d.is_dir() and (any(d.glob("lora_*/*/lora_weights.pt")) or any(d.glob("latent_cache/*.pt")))
     ]
     src_outputs = min(candidates, key=lambda d: len(d.parts)) if candidates else download_dir / "outputs"
     if src_outputs.exists():
         for item in src_outputs.iterdir():
             dest = MODELS_DIR / item.name
+            if item.name == "latent_cache" and item.is_dir():
+                # Merge: keep latents from earlier sessions, add the new ones.
+                dest.mkdir(exist_ok=True)
+                for f in item.glob("*.pt"):
+                    shutil.move(str(f), str(dest / f.name))
+                continue
             if dest.exists():
                 shutil.rmtree(dest) if dest.is_dir() else dest.unlink()
             shutil.move(str(item), str(dest))

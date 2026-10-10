@@ -80,6 +80,19 @@ def main():
     else:
         print("No KAGGLE_CHECKPOINT_DATASET_SLUG set -- this run will train from scratch.")
 
+    # Optional latent cache (see scripts/push_latent_cache_to_kaggle.py): lets
+    # the run skip the ~70s/clip VAE encode for clips already cached.
+    cache_slug = os.environ.get("KAGGLE_LATENT_CACHE_DATASET_SLUG") or (
+        f"{os.environ['KAGGLE_USERNAME']}/voidvideo-latent-cache-t2v" if os.environ.get("KAGGLE_USERNAME") else None
+    )
+    if cache_slug:
+        try:
+            api.dataset_status(cache_slug)
+            dataset_sources.append(cache_slug)
+            print(f"Attaching latent cache dataset {cache_slug}.")
+        except Exception:
+            print(f"No latent cache dataset {cache_slug} yet -- this run encodes clips itself.")
+
     ref = args.ref or current_git_ref()
     remote_url = current_git_remote_url()
 
