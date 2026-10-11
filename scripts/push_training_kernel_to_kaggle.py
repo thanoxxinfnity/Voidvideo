@@ -142,7 +142,13 @@ def main():
     (STAGING_DIR / "kernel-metadata.json").write_text(json.dumps(kernel_metadata, indent=2))
 
     print(f"Pushing kernel {kernel_slug} (task={args.task}, ref={ref}) to Kaggle...")
-    api.kernels_push(str(STAGING_DIR))
+    resp = api.kernels_push(str(STAGING_DIR))
+    # kernels_push returns an error string (e.g. "Maximum weekly GPU quota of
+    # 30.00 hours reached.") instead of raising, so check it -- otherwise this
+    # script reports success for a kernel that never started.
+    if getattr(resp, "error", None):
+        print(f"Kernel push FAILED: {resp.error}", file=sys.stderr)
+        sys.exit(1)
     print(
         f"Pushed. Kaggle will now build and run the kernel with a GPU.\n"
         f"Track progress at https://www.kaggle.com/code/{kernel_slug}\n"
