@@ -47,14 +47,33 @@ def main():
     import patches
     patches.apply_repo_patches(REPO)   # raises (and aborts before any compile) if upstream moved
     log("patches applied")
-    sh("git clone --depth 1 -b main --recursive https://github.com/microsoft/TRELLIS.2.git " + TRELLIS, check=True)
-    sh("cd %s && . ./setup.sh --basic --nvdiffrast --cumesh --o-voxel --flexgemm" % TRELLIS)
-    sh("NATTEN_CUDA_ARCH='7.5' NATTEN_N_WORKERS=2 pip install -q natten==0.21.0 --no-build-isolation")
-    sh("pip install -q -r %s/requirements.txt" % REPO)
+    # Prebuilt wheels from an earlier run (dataset "pixal3d-wheels"), if attached: skips ~45 min of CUDA compiles.
+    wheels = [w for w in glob.glob("/kaggle/input/**/*.whl", recursive=True)
+              if any(k in os.path.basename(w) for k in ("o_voxel", "cumesh", "flex_gemm", "nvdiffrast", "natten"))]
+    py_tag = "cp%d%d" % sys.version_info[:2]
+    wheels = [w for w in wheels if py_tag in w]
+    if len(wheels) >= 5:
+        log("installing %d prebuilt wheels" % len(wheels))
+        sh("pip install -q --no-deps " + " ".join("'%s'" % w for w in wheels), check=True)
+        sh("pip install -q lpips easydict ninja")
+    else:
+        sh("git clone --depth 1 -b main --recursive https://github.com/microsoft/TRELLIS.2.git " + TRELLIS, check=True)
+        sh("cd %s && . ./setup.sh --basic --nvdiffrast --cumesh --o-voxel --flexgemm" % TRELLIS)
+        sh("NATTEN_CUDA_ARCH='7.5' NATTEN_N_WORKERS=4 pip install -q natten==0.21.0 --no-build-isolation")
+        # keep the compiled wheels in the kernel output so they can become a dataset
+        sh("mkdir -p /kaggle/working/wheels && find $(pip cache dir)/wheels -name '*.whl' -exec cp -n {} /kaggle/working/wheels/ \\; ; ls -la /kaggle/working/wheels")
+    sh("pip install -q -r %s/requirements.txt" % REPO)  # may fail on the MoGe line; pins are re-applied below
     sh("pip install -q https://github.com/LDYang694/Storages/releases/download/20260430/utils3d-0.0.2-py3-none-any.whl")
     sh("pip install -q git+https://github.com/microsoft/MoGe.git")
     sh("pip install -q rembg onnxruntime")
-    r = sh("cd %s && ATTN_BACKEND=sdpa python -c 'import o_voxel, torch; import inference; print(\"imports ok\")'" % REPO)
+    # Pixal3D needs transformers==4.57.3 (DINOv3ViTModel.layer was renamed in 5.x). The requirements install
+    # above fails as a whole on the MoGe line, which silently leaves transformers 5.x - force the pin.
+    sh("sed 1d %s/requirements.txt > /kaggle/tmp/req_nomoge.txt && pip install -q -r /kaggle/tmp/req_nomoge.txt" % REPO)
+    sh("pip install -q transformers==4.57.3")
+    r = sh("python -c 'import transformers; assert transformers.__version__ == \"4.57.3\", transformers.__version__; print(\"transformers\", transformers.__version__)'")
+    if r.returncode != 0:
+        log("transformers pin FAILED - not starting UI (saves GPU quota)"); return
+    r = sh("cd %s && ATTN_BACKEND=sdpa python -c 'import o_voxel, torch, natten; import inference; print(\"imports ok\")'" % REPO)
     if r.returncode != 0:
         log("IMPORT CHECK FAILED - not starting UI (saves GPU quota)"); return
     log("env ready; starting UI")
