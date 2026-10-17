@@ -24,8 +24,12 @@ close next: encode the first frame with `vae`, concatenate it onto
 CogVideoXImageToVideoPipeline uses at inference time.
 """
 import argparse
+import gc
 import math
+import hashlib
 import os
+import random
+import time
 from pathlib import Path
 
 import torch
@@ -71,21 +75,21 @@ def load_config(path: str, task: str) -> dict:
 
 
 @torch.no_grad()
-def encode_prompt(tokenizer, text_encoder, prompts, device, max_length=226):
+def encode_prompt(tokenizer, text_encoder, prompts, out_device, max_length=226):
     inputs = tokenizer(
         prompts, padding="max_length", max_length=max_length,
         truncation=True, return_tensors="pt",
-    ).to(device)
-    return text_encoder(inputs.input_ids)[0]
+    ).to(text_encoder.device)
+    return text_encoder(inputs.input_ids)[0].to(out_device)
 
 
 @torch.no_grad()
-def encode_video(vae, pixel_values):
+def encode_video(vae, pixel_values, out_device):
     # pixel_values: (B, T, C, H, W) in [-1, 1] -> vae expects (B, C, T, H, W)
-    pixel_values = pixel_values.permute(0, 2, 1, 3, 4).to(dtype=vae.dtype)
+    pixel_values = pixel_values.permute(0, 2, 1, 3, 4).to(device=vae.device, dtype=vae.dtype)
     latent_dist = vae.encode(pixel_values).latent_dist
     latents = latent_dist.sample() * vae.config.scaling_factor
-    return latents.permute(0, 2, 1, 3, 4)  # (B, T, C, H, W) latent space
+    return latents.permute(0, 2, 1, 3, 4).to(out_device)  # (B, T, C, H, W) latent space
 
 
 def main():
@@ -105,10 +109,21 @@ def main():
 
     model_id = cfg["base_model_id"]
     tokenizer = T5Tokenizer.from_pretrained(model_id, subfolder="tokenizer")
-    text_encoder = T5EncoderModel.from_pretrained(model_id, subfolder="text_encoder", torch_dtype=weight_dtype)
-    vae = AutoencoderKLCogVideoX.from_pretrained(model_id, subfolder="vae", torch_dtype=weight_dtype)
+    # T5 is notorious for overflowing to NaN in fp16, so it stays bf16 even
+    # when training runs fp16; it only encodes ~226 text tokens, so the T4's
+    # missing native bf16 support costs speed there, not memory. The VAE stays
+    # fp32 for the same overflow reason (fp16 VAE decode went NaN/white on T4
+    # in the inference studio) -- it's small, so fp32 is cheap.
+    text_encoder = T5EncoderModel.from_pretrained(model_id, subfolder="text_encoder", torch_dtype=torch.bfloat16)
+    vae = AutoencoderKLCogVideoX.from_pretrained(model_id, subfolder="vae", torch_dtype=torch.float32)
+    vae.enable_slicing()
+    vae.enable_tiling()
+    # Frozen base weights in the training compute dtype (the trainable LoRA
+    # params are upcast to fp32 below by cast_training_params). fp32 here
+    # alone was ~6.8GB, and together with T5-XXL (~9.5GB) that exceeded a
+    # single T4 before a single step ran.
     transformer = CogVideoXTransformer3DModel.from_pretrained(
-        model_id, subfolder="transformer", torch_dtype=torch.float32
+        model_id, subfolder="transformer", torch_dtype=weight_dtype
     )
     scheduler = CogVideoXDPMScheduler.from_pretrained(model_id, subfolder="scheduler")
 
@@ -149,11 +164,136 @@ def main():
         num_frames=cfg["num_frames"],
         height=cfg["height"],
         width=cfg["width"],
-        caption_dropout=cfg["dataset"]["caption_dropout"],
     )
+
+    # The frozen encoders only ever see the same 143 clips and captions, so
+    # encode everything once up front and then drop T5 + VAE from GPU memory
+    # entirely. Encoding per step made the second GPU hold T5-XXL (~9.5GB)
+    # *and* a 49-frame fp32 VAE encode at the same time, which OOM'd, and
+    # would have re-run that VAE encode on every one of the 3000 steps. The
+    # dataset is deterministic (fixed frame indices), so caching is exact;
+    # caption dropout is re-applied per step below by swapping in the
+    # precomputed empty-caption embedding.
+    #
+    # Training is single-process (see kaggle_entrypoint.py), so with 2 GPUs
+    # the encoders can use the idle second one -- but T5-XXL (~9.5GB) and a
+    # 49-frame 480x720 fp32 VAE encode each need real headroom, and running
+    # both on GPU1 *at once* OOM'd there even though neither alone should.
+    # So they take turns: T5 encodes every caption first and is then freed
+    # before the VAE loads, rather than both sitting there through both loops.
+    multi_gpu = torch.cuda.device_count() > 1 and accelerator.num_processes == 1
+    enc_device = torch.device("cuda", (accelerator.device.index or 0) + 1) if multi_gpu else "cpu"
+
+    text_encoder.to(enc_device)
+    print(f"transformer on {accelerator.device}, text encoder on {text_encoder.device}")
+    captions = sorted({row.get("caption", "") for row in dataset.rows} | {""})
+    caption_index = {c: i for i, c in enumerate(captions)}
+    caption_embeds = torch.cat([
+        encode_prompt(tokenizer, text_encoder, [c], "cpu").to(weight_dtype) for c in captions
+    ])
+    empty_caption_idx = caption_index[""]
+    print(f"Precomputed {len(captions)} caption embeddings.")
+    del text_encoder
+    gc.collect()
+    torch.cuda.empty_cache()
+
+    vae.to(enc_device if multi_gpu else accelerator.device)
+    print(f"VAE on {vae.device}")
+    # --- Latent cache ---------------------------------------------------
+    # Encoding a 49-frame 720x480 clip through the fp32 tiled VAE takes ~70s
+    # on a T4, so a full pass over a few hundred clips can eat an entire 12h
+    # Kaggle session and never reach a training step (that is exactly what
+    # happened to a 770-row run: 585/770 latents, 0 steps). Three fixes:
+    #   1. Encode each *unique video* once -- balanced metadata repeats rows
+    #      for small categories, and repeats just reuse the same tensor.
+    #   2. Persist every encoded latent to LATENT_CACHE_DIR (and look in
+    #      LATENT_CACHE_SEED_DIR, a previously pushed cache dataset) so later
+    #      sessions skip the work entirely.
+    #   3. Stop encoding after PRECOMPUTE_BUDGET_SEC and train on what is
+    #      cached; clips are encoded round-robin by category so a partial
+    #      cache stays category-balanced and the rest finishes next session.
+    t_start = time.time()
+    budget = float(os.environ.get("PRECOMPUTE_BUDGET_SEC", 7 * 3600))
+    cache_dir = Path(os.environ.get("LATENT_CACHE_DIR", REPO_ROOT / "outputs" / "latent_cache"))
+    seed_env = os.environ.get("LATENT_CACHE_SEED_DIR")
+    if seed_env:
+        seed_dir = Path(seed_env)
+    else:
+        # Kaggle mounts attached datasets under /kaggle/input/<slug> or
+        # /kaggle/input/datasets/<owner>/<slug> depending on the image.
+        found = sorted(Path("/kaggle/input").glob("**/voidvideo-latent-cache-*")) if Path("/kaggle/input").exists() else []
+        seed_dir = found[0] if found else Path("/nonexistent-latent-seed")
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    def cache_name(video: str) -> str:
+        return hashlib.sha1(video.encode()).hexdigest()[:16] + ".pt"
+
+    def find_cached(video: str):
+        for d in (cache_dir, seed_dir):
+            f = d / cache_name(video)
+            if f.exists():
+                return f
+        return None
+
+    def category(video: str) -> str:
+        name = Path(video).name
+        return name.split("__")[0] if "__" in name else "other"
+
+    unique = {}
+    for i, row in enumerate(dataset.rows):
+        unique.setdefault(row["video"], i)
+    by_cat = {}
+    for video, i in unique.items():
+        by_cat.setdefault(category(video), []).append((video, i))
+    order = []
+    while any(by_cat.values()):
+        for cat in sorted(by_cat):
+            if by_cat[cat]:
+                order.append(by_cat[cat].pop(0))
+
+    latents_by_video = {}
+    encoded_now = 0
+    for n, (video, i) in enumerate(order):
+        f = find_cached(video)
+        if f is not None:
+            latents_by_video[video] = torch.load(f, map_location="cpu").to(weight_dtype)
+            continue
+        if time.time() - t_start > budget:
+            continue  # out of encode budget this session; next session picks these up
+        frames = dataset[i]["frames"].unsqueeze(0)
+        latents = encode_video(vae, frames, "cpu").to(weight_dtype)[0]
+        latents_by_video[video] = latents
+        torch.save(latents.cpu(), cache_dir / cache_name(video))
+        encoded_now += 1
+        # A 49-frame 480x720 fp32 tiled encode is a large, oddly-shaped
+        # allocation; repeating it without a cache clear let the allocator's
+        # free blocks fragment until an encode could no longer find a
+        # big-enough contiguous span and fell back to slow retries -- a live
+        # run stalled in exactly this loop with no error and no progress.
+        torch.cuda.empty_cache()
+        if encoded_now % 5 == 0:
+            print(f"Encoded {encoded_now} new latents ({len(latents_by_video)}/{len(order)} unique clips cached)", flush=True)
+
+    cached = [
+        (latents_by_video[row["video"]], caption_index[row.get("caption", "")])
+        for row in dataset.rows if row["video"] in latents_by_video
+    ]
+    print(
+        f"Latent cache: {len(latents_by_video)}/{len(order)} unique clips ready "
+        f"({encoded_now} encoded this session); training on {len(cached)}/{len(dataset.rows)} metadata rows.",
+        flush=True,
+    )
+    if not cached:
+        raise RuntimeError("No latents available to train on (encode budget too small?).")
+
+    del vae
+    gc.collect()
+    torch.cuda.empty_cache()
+
+    caption_dropout = cfg["dataset"]["caption_dropout"]
     dataloader = DataLoader(
-        dataset, batch_size=cfg["train_batch_size"], shuffle=True,
-        num_workers=2, collate_fn=lambda batch: batch,
+        cached, batch_size=cfg["train_batch_size"], shuffle=True,
+        collate_fn=lambda batch: batch,
     )
 
     lr_scheduler = torch.optim.lr_scheduler.LambdaLR(
@@ -164,8 +304,6 @@ def main():
     transformer, optimizer, dataloader, lr_scheduler = accelerator.prepare(
         transformer, optimizer, dataloader, lr_scheduler
     )
-    text_encoder.to(accelerator.device)
-    vae.to(accelerator.device)
 
     output_dir = REPO_ROOT / cfg["output_dir"]
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -176,11 +314,12 @@ def main():
     while global_step < cfg["max_train_steps"]:
         for batch in dataloader:
             with accelerator.accumulate(transformer):
-                pixel_values = torch.stack([b["frames"] for b in batch]).to(accelerator.device)
-                captions = [b["caption"] for b in batch]
-
-                latents = encode_video(vae, pixel_values).to(dtype=weight_dtype)
-                prompt_embeds = encode_prompt(tokenizer, text_encoder, captions, accelerator.device)
+                latents = torch.stack([lat for lat, _ in batch]).to(accelerator.device)
+                cap_ids = [
+                    empty_caption_idx if random.random() < caption_dropout else idx
+                    for _, idx in batch
+                ]
+                prompt_embeds = caption_embeds[cap_ids].to(accelerator.device)
 
                 noise = torch.randn_like(latents)
                 bsz = latents.shape[0]
@@ -216,8 +355,18 @@ def main():
                 if accelerator.is_main_process and global_step % cfg["checkpointing_steps"] == 0:
                     save_checkpoint(accelerator, transformer, output_dir, global_step)
 
-                if accelerator.is_main_process and global_step % cfg["validation_steps"] == 0:
-                    run_validation(cfg, model_id, transformer, accelerator, output_dir, global_step, args.task)
+                # validation_steps: 0 disables it. run_validation builds a
+                # whole second pipeline with enable_model_cpu_offload() around
+                # the *live* training transformer (which would leave it on CPU
+                # afterwards) and reloads a second T5 copy -- neither fits
+                # alongside training on a T4. Checkpoints are the real output;
+                # sample them afterwards in the Gradio studio instead.
+                if (accelerator.is_main_process and cfg.get("validation_steps")
+                        and global_step % cfg["validation_steps"] == 0):
+                    try:
+                        run_validation(cfg, model_id, transformer, accelerator, output_dir, global_step, args.task)
+                    except Exception as e:
+                        print(f"Validation at step {global_step} failed, continuing training: {e}")
 
             if global_step >= cfg["max_train_steps"]:
                 break

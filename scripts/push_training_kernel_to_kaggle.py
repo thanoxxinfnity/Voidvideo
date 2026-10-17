@@ -60,6 +60,38 @@ def main():
     if not kernel_slug or not dataset_slug:
         print("KAGGLE_KERNEL_SLUG and KAGGLE_DATASET_SLUG must be set in .env.", file=sys.stderr)
         sys.exit(1)
+    from kaggle.api.kaggle_api_extended import KaggleApi
+
+    api = KaggleApi()
+    api.authenticate()
+
+    checkpoint_dataset_slug = os.environ.get("KAGGLE_CHECKPOINT_DATASET_SLUG")
+    dataset_sources = [dataset_slug]
+    if checkpoint_dataset_slug:
+        try:
+            api.dataset_status(checkpoint_dataset_slug)
+            dataset_sources.append(checkpoint_dataset_slug)
+            print(f"Attaching checkpoint dataset {checkpoint_dataset_slug} for resume.")
+        except Exception:
+            print(
+                f"KAGGLE_CHECKPOINT_DATASET_SLUG={checkpoint_dataset_slug} is set but doesn't exist yet "
+                "on Kaggle -- run scripts/push_checkpoint_to_kaggle.py first. Training from scratch this run."
+            )
+    else:
+        print("No KAGGLE_CHECKPOINT_DATASET_SLUG set -- this run will train from scratch.")
+
+    # Optional latent cache (see scripts/push_latent_cache_to_kaggle.py): lets
+    # the run skip the ~70s/clip VAE encode for clips already cached.
+    cache_slug = os.environ.get("KAGGLE_LATENT_CACHE_DATASET_SLUG") or (
+        f"{os.environ['KAGGLE_USERNAME']}/voidvideo-latent-cache-t2v" if os.environ.get("KAGGLE_USERNAME") else None
+    )
+    if cache_slug:
+        try:
+            api.dataset_status(cache_slug)
+            dataset_sources.append(cache_slug)
+            print(f"Attaching latent cache dataset {cache_slug}.")
+        except Exception:
+            print(f"No latent cache dataset {cache_slug} yet -- this run encodes clips itself.")
 
     ref = args.ref or current_git_ref()
     remote_url = current_git_remote_url()
@@ -79,6 +111,16 @@ def main():
         'TRAIN_TASK = "t2v"  # rewritten at push time; "t2v" or "i2v"',
         f'TRAIN_TASK = "{args.task}"  # rewritten at push time; "t2v" or "i2v"',
     )
+    hf_token = os.environ.get("HF_TOKEN")
+    if hf_token:
+        # Same pattern as push_gradio_generator_to_kaggle.py: injected only
+        # into the staged (gitignored) copy, never the tracked source.
+        # Unauthenticated HF requests are slow/rate-limited and this kernel
+        # downloads T5-XXL + the CogVideoX transformer + VAE on every run.
+        entrypoint_code = f'import os as _os; _os.environ["HF_TOKEN"] = {hf_token!r}\n' + entrypoint_code
+        print("HF_TOKEN found in .env -- injecting into the staged kernel for faster/authenticated downloads.")
+    else:
+        print("No HF_TOKEN in .env -- proceeding with unauthenticated (slower, rate-limited) HF downloads.")
     (STAGING_DIR / "kaggle_entrypoint.py").write_text(entrypoint_code)
 
     # Kaggle's kernel-metadata.json schema has no field for arbitrary env vars,
@@ -92,20 +134,21 @@ def main():
         "is_private": True,
         "enable_gpu": True,
         "enable_internet": True,  # required for pip install + git clone
-        "dataset_sources": [dataset_slug],
+        "dataset_sources": dataset_sources,
         "competition_sources": [],
         "kernel_sources": [],
         "model_sources": [],
     }
     (STAGING_DIR / "kernel-metadata.json").write_text(json.dumps(kernel_metadata, indent=2))
 
-    from kaggle.api.kaggle_api_extended import KaggleApi
-
-    api = KaggleApi()
-    api.authenticate()
-
     print(f"Pushing kernel {kernel_slug} (task={args.task}, ref={ref}) to Kaggle...")
-    api.kernels_push(str(STAGING_DIR))
+    resp = api.kernels_push(str(STAGING_DIR))
+    # kernels_push returns an error string (e.g. "Maximum weekly GPU quota of
+    # 30.00 hours reached.") instead of raising, so check it -- otherwise this
+    # script reports success for a kernel that never started.
+    if getattr(resp, "error", None):
+        print(f"Kernel push FAILED: {resp.error}", file=sys.stderr)
+        sys.exit(1)
     print(
         f"Pushed. Kaggle will now build and run the kernel with a GPU.\n"
         f"Track progress at https://www.kaggle.com/code/{kernel_slug}\n"

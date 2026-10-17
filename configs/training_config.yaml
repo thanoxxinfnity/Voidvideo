@@ -15,14 +15,29 @@ t2v:
   learning_rate: 1.0e-4
   lr_scheduler: "cosine"
   lr_warmup_steps: 100
-  max_train_steps: 3000
+  # A live run measured ~200s/step here (gradient checkpointing + native
+  # 49-frame/480x720 fp16 transformer forward+backward on a single T4), so
+  # 3000 steps is ~166 GPU-hours -- ~15+ relaunches even before Kaggle's
+  # weekly GPU quota is factored in. 1000 is still generous for a 143-clip
+  # LoRA (common guidance is a few hundred to ~1000 steps) and reachable in
+  # a handful of relaunches via scripts/push_checkpoint_to_kaggle.py's resume
+  # relay. Note --resume_from_checkpoint only restores LoRA weights, not
+  # global_step/optimizer state, so this is a per-run budget, not cumulative.
+  max_train_steps: 1000
   train_batch_size: 1
   gradient_accumulation_steps: 4
   gradient_checkpointing: true
-  mixed_precision: "bf16"   # "fp16" if your GPU lacks bf16 support (e.g. older T4 setups)
+  # fp16, not bf16: Kaggle's T4s lack native bf16, and under bf16 PyTorch's
+  # memory-efficient attention kernel is unavailable on them, so SDPA falls back
+  # to materializing the full attention matrix (~70GB at 480x720x49 frames).
+  mixed_precision: "fp16"
   use_8bit_adam: true
-  checkpointing_steps: 250
-  validation_steps: 250
+  # 250 was too sparse: gradient checkpointing + native 49-frame/480x720 fp16
+  # on a T4 made a single step slow enough that a live run burned most of its
+  # 12-hour Kaggle session without ever reaching step 250, so a mid-run kill
+  # would have lost everything, precompute included, with zero checkpoints.
+  checkpointing_steps: 25
+  validation_steps: 0      # disabled on T4 -- see train_lora.py
   validation_prompt: "a hand-drawn anime girl walking through a rain-soaked street at night, traditional 2D animation, natural line-art, smooth timing"
   seed: 42
 
@@ -39,18 +54,20 @@ i2v:
   learning_rate: 1.0e-4
   lr_scheduler: "cosine"
   lr_warmup_steps: 100
-  max_train_steps: 3000
+  max_train_steps: 1000     # see t2v's max_train_steps comment
   train_batch_size: 1
   gradient_accumulation_steps: 4
   gradient_checkpointing: true
-  mixed_precision: "bf16"
+  mixed_precision: "fp16"
   use_8bit_adam: true
-  checkpointing_steps: 250
-  validation_steps: 250
+  checkpointing_steps: 25
+  validation_steps: 0      # disabled on T4 -- see train_lora.py
   validation_prompt: "a hand-drawn anime girl walking through a rain-soaked street at night, traditional 2D animation, natural line-art, smooth timing"
   seed: 42
 
 dataset:
   metadata_file: "data/processed/metadata.jsonl"
-  video_root: "data/processed/clips"
+  # metadata.jsonl rows already carry the "clips/" prefix (see prepare_dataset.py),
+  # so the root is data/processed itself -- pointing it at clips/ doubled it.
+  video_root: "data/processed"
   caption_dropout: 0.1   # fraction of steps trained with empty caption, improves classifier-free guidance quality
