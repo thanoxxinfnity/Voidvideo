@@ -52,6 +52,9 @@ def main():
     parser.add_argument("--task", choices=["t2v", "i2v"], default="t2v")
     parser.add_argument("--ref", default=None,
                          help="Git branch/tag/commit the Kaggle kernel should clone. Defaults to current branch.")
+    parser.add_argument("--max-train-steps", type=int, default=None,
+                        help="Override max_train_steps for this session (the counter resets each "
+                             "session, so use it to cap the final relay session).")
     args = parser.parse_args()
 
     load_dotenv(REPO_ROOT / ".env")
@@ -111,6 +114,9 @@ def main():
         'TRAIN_TASK = "t2v"  # rewritten at push time; "t2v" or "i2v"',
         f'TRAIN_TASK = "{args.task}"  # rewritten at push time; "t2v" or "i2v"',
     )
+    if args.max_train_steps:
+        entrypoint_code = f'import os as _os2; _os2.environ["MAX_TRAIN_STEPS"] = "{args.max_train_steps}"\n' + entrypoint_code
+        print(f"Capping this session at MAX_TRAIN_STEPS={args.max_train_steps}.")
     hf_token = os.environ.get("HF_TOKEN")
     if hf_token:
         # Same pattern as push_gradio_generator_to_kaggle.py: injected only

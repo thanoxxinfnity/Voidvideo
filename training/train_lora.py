@@ -71,6 +71,10 @@ def load_config(path: str, task: str) -> dict:
         full_cfg = yaml.safe_load(f)
     cfg = full_cfg[task]
     cfg["dataset"] = full_cfg["dataset"]
+    # The step counter restarts every Kaggle session, so the final relay session
+    # needs a smaller budget to land on the overall target; the push script sets this.
+    if os.environ.get("MAX_TRAIN_STEPS"):
+        cfg["max_train_steps"] = int(os.environ["MAX_TRAIN_STEPS"])
     return cfg
 
 
