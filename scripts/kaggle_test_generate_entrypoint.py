@@ -69,11 +69,25 @@ def interpolate(src: Path) -> Path:
 
 def generate(pipe, tag: str) -> Path:
     t0 = time.time()
-    frames = pipe(
+    # Denoise in fp16, but decode with the VAE in fp32: the fp16 VAE decode gave all-black
+    # frames on the T4 (identical 1KB frames), the same reason training keeps its VAE fp32.
+    latents = pipe(
         prompt=PROMPT, negative_prompt=NEGATIVE, num_frames=49, height=480, width=720,
         num_inference_steps=STEPS, guidance_scale=GUIDANCE,
-        generator=torch.Generator("cpu").manual_seed(SEED),
-    ).frames[0]
+        generator=torch.Generator("cpu").manual_seed(SEED), output_type="latent",
+    ).frames
+    print(f"[{tag}] latents: shape {tuple(latents.shape)} nan={torch.isnan(latents).any().item()} "
+          f"mean={latents.float().mean().item():.3f} std={latents.float().std().item():.3f}", flush=True)
+    vae = pipe.vae
+    vae.to("cuda", dtype=torch.float32)
+    with torch.no_grad():
+        z = latents.to("cuda", dtype=torch.float32).permute(0, 2, 1, 3, 4) / vae.config.scaling_factor
+        video = vae.decode(z).sample
+    vae.to("cpu")
+    torch.cuda.empty_cache()
+    print(f"[{tag}] decoded: nan={torch.isnan(video).any().item()} min={video.min().item():.2f} "
+          f"max={video.max().item():.2f}", flush=True)
+    frames = pipe.video_processor.postprocess_video(video=video.cpu(), output_type="pil")[0]
     raw = OUT / f"{tag}.mp4"
     export_to_video(frames, str(raw), fps=FPS)
     print(f"[{tag}] done in {(time.time() - t0) / 60:.1f} min", flush=True)
