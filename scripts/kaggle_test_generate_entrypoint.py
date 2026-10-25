@@ -3,6 +3,7 @@ Runs INSIDE a Kaggle GPU kernel. One-shot sanity check of a trained T2V LoRA:
 generates the same prompt/seed with and without the LoRA so the difference is
 visible, writes the clips to /kaggle/working and exits (no Gradio, no tunnel).
 """
+import gc
 import os
 import subprocess
 import sys
@@ -67,17 +68,8 @@ def interpolate(src: Path) -> Path:
         return src
 
 
-def generate(pipe, tag: str) -> Path:
-    t0 = time.time()
-    # Denoise in fp16, but decode with the VAE in fp32: the fp16 VAE decode gave all-black
-    # frames on the T4 (identical 1KB frames), the same reason training keeps its VAE fp32.
-    latents = pipe(
-        prompt=PROMPT, negative_prompt=NEGATIVE, num_frames=49, height=480, width=720,
-        num_inference_steps=STEPS, guidance_scale=GUIDANCE,
-        generator=torch.Generator("cpu").manual_seed(SEED), output_type="latent",
-    ).frames
-    print(f"[{tag}] latents: shape {tuple(latents.shape)} nan={torch.isnan(latents).any().item()} "
-          f"mean={latents.float().mean().item():.3f} std={latents.float().std().item():.3f}", flush=True)
+def decode_latents(pipe, latents):
+    # Decode with the VAE in fp32 regardless of the denoising dtype.
     vae = pipe.vae
     vae.to("cuda", dtype=torch.float32)
     with torch.no_grad():
@@ -85,33 +77,68 @@ def generate(pipe, tag: str) -> Path:
         video = vae.decode(z).sample
     vae.to("cpu")
     torch.cuda.empty_cache()
-    print(f"[{tag}] decoded: nan={torch.isnan(video).any().item()} min={video.min().item():.2f} "
-          f"max={video.max().item():.2f}", flush=True)
-    frames = pipe.video_processor.postprocess_video(video=video.cpu(), output_type="pil")[0]
-    raw = OUT / f"{tag}.mp4"
-    export_to_video(frames, str(raw), fps=FPS)
-    print(f"[{tag}] done in {(time.time() - t0) / 60:.1f} min", flush=True)
-    return interpolate(raw)
+    return video.cpu()
+
+
+def run(pipe, tag: str, steps: int, save: bool = True):
+    t0 = time.time()
+    latents = pipe(
+        prompt=PROMPT, negative_prompt=NEGATIVE, num_frames=49, height=480, width=720,
+        num_inference_steps=steps, guidance_scale=GUIDANCE,
+        generator=torch.Generator("cpu").manual_seed(SEED), output_type="latent",
+    ).frames
+    video = decode_latents(pipe, latents)
+    spread = video.float().std().item()
+    print(f"[{tag}] latents nan={torch.isnan(latents).any().item()} std={latents.float().std().item():.3f}; "
+          f"decoded min={video.min().item():.2f} max={video.max().item():.2f} std={spread:.3f} "
+          f"({(time.time() - t0) / 60:.1f} min)", flush=True)
+    path = None
+    if save:
+        frames = pipe.video_processor.postprocess_video(video=video, output_type="pil")[0]
+        raw = OUT / f"{tag}.mp4"
+        export_to_video(frames, str(raw), fps=FPS)
+        path = interpolate(raw)
+    return spread, path
+
+
+def load_pipe(dtype):
+    pipe = CogVideoXPipeline.from_pretrained(MODEL_ID, torch_dtype=dtype)
+    pipe.enable_model_cpu_offload()
+    pipe.vae.enable_slicing()
+    pipe.vae.enable_tiling()
+    return pipe
+
+
+def attach_lora(pipe, dtype):
+    pipe.transformer.add_adapter(LoraConfig(
+        r=LORA_RANK, lora_alpha=LORA_ALPHA, target_modules=LORA_TARGETS, init_lora_weights=True))
+    result = set_peft_model_state_dict(pipe.transformer, lora_state)
+    print("LoRA loaded. unexpected keys:", len(getattr(result, "unexpected_keys", None) or []), flush=True)
+    for p in pipe.transformer.parameters():
+        if p.dtype != dtype:
+            p.data = p.data.to(dtype)
 
 
 lora_state = torch.load(find_lora(), map_location="cpu")
 
-pipe = CogVideoXPipeline.from_pretrained(MODEL_ID, torch_dtype=torch.float16)
-pipe.enable_model_cpu_offload()
-pipe.vae.enable_slicing()
-pipe.vae.enable_tiling()
+# Stage 1: quick 6-step probe per dtype (no LoRA); the first one that decodes to a non-flat image wins.
+chosen = None
+for name, dtype in (("fp16", torch.float16), ("bf16", torch.bfloat16)):
+    pipe = load_pipe(dtype)
+    spread, _ = run(pipe, f"probe_{name}", 6, save=False)
+    if spread > 0.1:
+        chosen = (name, dtype, pipe)
+        break
+    del pipe
+    gc.collect()
+    torch.cuda.empty_cache()
+assert chosen, "both fp16 and bf16 decode to a flat image -- see probe lines in the log"
+name, dtype, pipe = chosen
+print("Using dtype", name, flush=True)
 
-# LoRA first so the result is saved even if the second generation runs out of time.
-pipe.transformer.add_adapter(LoraConfig(
-    r=LORA_RANK, lora_alpha=LORA_ALPHA, target_modules=LORA_TARGETS, init_lora_weights=True))
-result = set_peft_model_state_dict(pipe.transformer, lora_state)
-unexpected = getattr(result, "unexpected_keys", None)
-print("LoRA loaded. unexpected keys:", len(unexpected or []), flush=True)
-for p in pipe.transformer.parameters():
-    if p.requires_grad or p.dtype == torch.float32:
-        p.data = p.data.to(torch.float16)
-generate(pipe, "with_lora")
-
+# Stage 2: full-quality clips; LoRA first so it is saved even if the second run runs out of time.
+attach_lora(pipe, dtype)
+run(pipe, "with_lora", STEPS)
 pipe.transformer.disable_adapters()
-generate(pipe, "base_no_lora")
+run(pipe, "base_no_lora", STEPS)
 print("ALL_DONE", flush=True)
