@@ -3,10 +3,11 @@ import subprocess
 import sys
 import time
 
+TRANSFORMERS_PIN = "4.57.3"
 DIFFUSERS_PIN = "0.35.2"  # latest (0.42.0) gave noise-like latents for CogVideoX-2b
 from pathlib import Path
 
-subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-U", "diffusers==" + DIFFUSERS_PIN, "transformers>=4.44",
+subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-U", "diffusers==" + DIFFUSERS_PIN, "transformers==" + TRANSFORMERS_PIN,
                 "accelerate>=0.33", "imageio[ffmpeg]", "sentencepiece"], check=True)
 subprocess.run([sys.executable, "-m", "pip", "uninstall", "-y", "-q", "torchao"], check=False)
 
@@ -16,8 +17,10 @@ import torch  # noqa: E402
 from diffusers import AutoencoderKLCogVideoX, CogVideoXPipeline  # noqa: E402
 from diffusers.utils import export_to_video  # noqa: E402
 
-print("diffusers", diffusers.__version__, "torch", torch.__version__, flush=True)
+import transformers  # noqa: E402
+print("diffusers", diffusers.__version__, "transformers", transformers.__version__, "torch", torch.__version__, flush=True)
 MODEL_ID = "THUDM/CogVideoX-2b"
+PROMPT = "A girl in a school uniform walking down a sunlit street, 2D anime, hand-drawn, clean ink lines, flat colors"
 OUT = Path("/kaggle/working")
 
 
@@ -30,9 +33,11 @@ def stats(tag, x):
 # Real denoised latents (9 frames, 25 steps, fp16) decoded with each VAE mode.
 pipe = CogVideoXPipeline.from_pretrained(MODEL_ID, torch_dtype=torch.float16)
 pipe.enable_model_cpu_offload()
+tok_ids = pipe.tokenizer(PROMPT, padding="max_length", max_length=226, truncation=True, return_tensors="pt").input_ids
+print("tokens:", int((tok_ids != 0).sum()), "non-pad; first ids", tok_ids[0, :8].tolist(), flush=True)
 t0 = time.time()
 lat = pipe(
-    prompt="A girl in a school uniform walking down a sunlit street, 2D anime, hand-drawn, clean ink lines, flat colors",
+    prompt=PROMPT,
     num_frames=9, height=480, width=720, num_inference_steps=25, guidance_scale=6.0,
     generator=torch.Generator("cpu").manual_seed(1), output_type="latent",
     callback_on_step_end=lambda p, i, t, kw: (print(f"step {i} std={kw['latents'].float().std().item():.3f}", flush=True) if i % 5 == 0 else None, kw)[1],
