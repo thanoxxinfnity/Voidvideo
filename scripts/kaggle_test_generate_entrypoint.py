@@ -1,186 +1,71 @@
 """
-Runs INSIDE a Kaggle GPU kernel. One-shot sanity check of a trained T2V LoRA:
-generates the same prompt/seed with and without the LoRA so the difference is
-visible, writes the clips to /kaggle/working and exits (no Gradio, no tunnel).
+Kaggle kernel: (1) canonical diffusers-docs CogVideoX-2b generation as a pipeline sanity baseline,
+(2) the same call with the trained LoRA on an anime prompt. Both decoded with an fp32 VAE.
 """
-import gc
-import os
 import subprocess
 import sys
 import time
 from pathlib import Path
 
-subprocess.run(
-    [sys.executable, "-m", "pip", "install", "-q", "-U",
-     "diffusers>=0.35.0", "transformers>=4.44", "accelerate>=0.33", "peft>=0.12",
-     "imageio[ffmpeg]", "sentencepiece"],
-    check=True,
-)
-
-# Kaggle ships torchao 0.10.0, which peft rejects as incompatible; uninstalling makes
-# is_torchao_available() a clean False (same workaround as training/kaggle_entrypoint.py).
+subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-U", "diffusers==0.35.2", "transformers==4.57.3",
+                "accelerate>=0.33", "peft>=0.12", "imageio[ffmpeg]", "sentencepiece"], check=True)
 subprocess.run([sys.executable, "-m", "pip", "uninstall", "-y", "-q", "torchao"], check=False)
 
 import torch  # noqa: E402
-from diffusers import CogVideoXPipeline  # noqa: E402
+from diffusers import AutoencoderKLCogVideoX, CogVideoXPipeline  # noqa: E402
 from diffusers.utils import export_to_video  # noqa: E402
 from peft import LoraConfig, set_peft_model_state_dict  # noqa: E402
 
 MODEL_ID = "THUDM/CogVideoX-2b"
-LORA_RANK = 64
-LORA_ALPHA = 64
-LORA_TARGETS = ["to_q", "to_k", "to_v", "to_out.0"]
-FPS = 8
 OUT = Path("/kaggle/working")
-SEED = 42
-STEPS = 30
-GUIDANCE = 6.0
-# Wording follows the training clips' style (see data/README.md).
-PROMPT = (
-    "A lean teenage sorcerer in a tattered navy-black high-collar uniform sprinting down a narrow, "
-    "rain-slicked Tokyo back-alley at night. Low-angle tracking shot on boots splashing through shallow "
-    "puddles. 2D traditional cel animation, sharp ink lines, hand-drawn splash in-betweens, flat shadows, "
-    "modern 2D anime film style, fully colored, clean inked outlines."
-)
-NEGATIVE = "photorealistic, 3D render, CGI, blurry, distorted, deformed, black and white, sketch, watermark"
+PANDA = ("A panda, dressed in a small, red jacket and a tiny hat, sits on a wooden stool in a serene bamboo "
+         "forest. The panda's fluffy paws strum a miniature acoustic guitar, producing soft, melodic tunes.")
+ANIME = ("A lean teenage sorcerer in a tattered navy-black high-collar uniform sprinting down a narrow, "
+         "rain-slicked Tokyo back-alley at night, boots splashing through shallow puddles. 2D traditional cel "
+         "animation, sharp ink lines, hand-drawn in-betweens, flat shadows, modern 2D anime film style.")
 
 
-def find_lora() -> Path:
-    matches = sorted(Path("/kaggle/input").rglob("lora_weights.pt"))
-    assert matches, "no lora_weights.pt found under /kaggle/input -- attach the checkpoint dataset"
-    print("Using LoRA:", matches[0], flush=True)
-    return matches[0]
+def stats(tag, x):
+    x = x.float()
+    print(f"[{tag}] min={x.min().item():.3f} max={x.max().item():.3f} mean={x.mean().item():.3f} "
+          f"std={x.std().item():.3f} nan={torch.isnan(x).any().item()}", flush=True)
 
 
-def interpolate(src: Path) -> Path:
-    import imageio_ffmpeg
-    dst = src.with_name(src.stem + "_24fps.mp4")
-    try:
-        subprocess.run(
-            [imageio_ffmpeg.get_ffmpeg_exe(), "-y", "-i", str(src), "-filter:v",
-             "minterpolate=fps=24:mi_mode=mci:mc_mode=aobmc:vsbmc=1",
-             "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "18", str(dst)],
-            check=True, capture_output=True, timeout=300,
-        )
-        return dst
-    except Exception as e:
-        print("24fps interpolation failed, keeping 8fps:", e, flush=True)
-        return src
+pipe = CogVideoXPipeline.from_pretrained(MODEL_ID, torch_dtype=torch.float16)
+pipe.enable_model_cpu_offload()
+pipe.vae.enable_slicing()
+pipe.vae.enable_tiling()
+vae32 = AutoencoderKLCogVideoX.from_pretrained(MODEL_ID, subfolder="vae", torch_dtype=torch.float32)
+vae32.enable_slicing()
+vae32.enable_tiling()
 
 
-def decode_latents(pipe, latents):
-    # Decode with the VAE in fp32 regardless of the denoising dtype.
-    vae = pipe.vae
-    vae.to("cuda", dtype=torch.float32)
-    with torch.no_grad():
-        z = latents.to("cuda", dtype=torch.float32).permute(0, 2, 1, 3, 4) / vae.config.scaling_factor
-        video = vae.decode(z).sample
-    vae.to("cpu")
-    torch.cuda.empty_cache()
-    return video.cpu()
-
-
-def run(pipe, tag: str, steps: int, save: bool = True, frames_n: int = 49, embeds=None, verbose=False):
+def gen(tag, prompt):
     t0 = time.time()
-
-    def log_step(_pipe, i, t, kw):
-        lat = kw["latents"]
-        print(f"[{tag}] step {i}: latents std={lat.float().std().item():.3f} "
-              f"absmax={lat.float().abs().max().item():.2f} nan={torch.isnan(lat).any().item()}", flush=True)
-        return kw
-
-    kwargs = dict(prompt_embeds=embeds[0], negative_prompt_embeds=embeds[1]) if embeds else \
-        dict(prompt=PROMPT, negative_prompt=NEGATIVE)
-    if verbose:
-        kwargs.update(callback_on_step_end=log_step, callback_on_step_end_tensor_inputs=["latents"])
-    latents = pipe(
-        num_frames=frames_n, height=480, width=720,
-        num_inference_steps=steps, guidance_scale=GUIDANCE,
-        generator=torch.Generator("cpu").manual_seed(SEED), output_type="latent", **kwargs,
-    ).frames
-    video = decode_latents(pipe, latents)
-    spread = video.float().std().item()
-    print(f"[{tag}] latents nan={torch.isnan(latents).any().item()} std={latents.float().std().item():.3f}; "
-          f"decoded min={video.min().item():.2f} max={video.max().item():.2f} std={spread:.3f} "
-          f"({(time.time() - t0) / 60:.1f} min)", flush=True)
-    path = None
-    if save:
-        frames = pipe.video_processor.postprocess_video(video=video, output_type="pil")[0]
-        raw = OUT / f"{tag}.mp4"
-        export_to_video(frames, str(raw), fps=FPS)
-        path = interpolate(raw)
-    return spread, path
-
-
-def load_pipe(dtype):
-    pipe = CogVideoXPipeline.from_pretrained(MODEL_ID, torch_dtype=dtype)
-    pipe.enable_model_cpu_offload()
-    pipe.vae.enable_slicing()
-    pipe.vae.enable_tiling()
-    return pipe
-
-
-def attach_lora(pipe, dtype):
-    pipe.transformer.add_adapter(LoraConfig(
-        r=LORA_RANK, lora_alpha=LORA_ALPHA, target_modules=LORA_TARGETS, init_lora_weights=True))
-    result = set_peft_model_state_dict(pipe.transformer, lora_state)
-    print("LoRA loaded. unexpected keys:", len(getattr(result, "unexpected_keys", None) or []), flush=True)
-    for p in pipe.transformer.parameters():
-        if p.dtype != dtype:
-            p.data = p.data.to(dtype)
-
-
-lora_state = torch.load(find_lora(), map_location="cpu")
-
-# Stage 1: tiny probes (9 frames, 4 steps, no LoRA) over text-encoder / transformer dtype combinations.
-# CogVideoX-2B in plain fp16 gave flat (all ~-1) frames, bf16 OOMs at full length on a T4 (no
-# memory-efficient attention), so find which combination actually denoises.
-pipe = load_pipe(torch.float16)
-
-
-def embeds_for(te_dtype, out_dtype):
-    pipe.text_encoder.to(te_dtype)
-    pipe.text_encoder.to("cuda")
+    lat = pipe(prompt=prompt, num_videos_per_prompt=1, num_inference_steps=50, num_frames=49,
+               guidance_scale=6, generator=torch.Generator("cuda").manual_seed(42), output_type="latent").frames
+    stats(f"{tag} latents", lat)
+    vae32.to("cuda")
     with torch.no_grad():
-        pe, ne = pipe.encode_prompt(PROMPT, NEGATIVE, do_classifier_free_guidance=True, device="cuda")
-    pipe.text_encoder.to("cpu")
+        video = vae32.decode(lat.to("cuda", torch.float32).permute(0, 2, 1, 3, 4) / vae32.config.scaling_factor).sample
+    vae32.to("cpu")
     torch.cuda.empty_cache()
-    print(f"embeds te={te_dtype}: nan={torch.isnan(pe).any().item()} inf={torch.isinf(pe).any().item()} "
-          f"absmax={pe.float().abs().max().item():.1f} std={pe.float().std().item():.3f}", flush=True)
-    return pe.to(out_dtype), ne.to(out_dtype)
+    stats(f"{tag} decoded", video)
+    frames = pipe.video_processor.postprocess_video(video=video.cpu(), output_type="pil")[0]
+    export_to_video(frames, str(OUT / f"{tag}.mp4"), fps=8)
+    print(f"[{tag}] done in {(time.time() - t0) / 60:.1f} min", flush=True)
 
 
-variants = [
-    ("fp16_te16", torch.float16, torch.float16),
-    ("fp16_tebf16", torch.bfloat16, torch.float16),
-    ("bf16_tebf16", torch.bfloat16, torch.bfloat16),
-    ("fp32_tebf16", torch.bfloat16, torch.float32),
-]
-chosen = None
-for name, te_dtype, tf_dtype in variants:
-    try:
-        emb = embeds_for(te_dtype, tf_dtype)
-        pipe.transformer.to(tf_dtype)
-        spread, _ = run(pipe, f"probe_{name}", 4, save=False, frames_n=9, embeds=emb, verbose=True)
-    except Exception as e:  # keep probing the remaining variants
-        print(f"[probe_{name}] FAILED: {type(e).__name__}: {str(e)[:200]}", flush=True)
-        torch.cuda.empty_cache()
-        continue
-    if spread > 0.1 and chosen is None:
-        chosen = (name, te_dtype, tf_dtype)
-assert chosen, "no dtype combination decodes to a real image -- see probe lines in the log"
-name, te_dtype, dtype = chosen
-print("Using", name, flush=True)
-if dtype != torch.float16:
-    # bf16/fp32 attention falls back to a ~70GB score matrix at 49 frames on a T4, so the full
-    # clip cannot run in this setup; stop here and let the probe lines in the log decide the next step.
-    print("PROBES_DONE: only a non-fp16 variant works; full-length run would OOM, stopping.", flush=True)
-    sys.exit(0)
-# Stage 2: full-quality clips; LoRA first so it is saved even if the second run runs out of time.
-emb = embeds_for(te_dtype, dtype)
-pipe.transformer.to(dtype)
-attach_lora(pipe, dtype)
-run(pipe, "with_lora", STEPS, embeds=emb)
-pipe.transformer.disable_adapters()
-run(pipe, "base_no_lora", STEPS, embeds=emb)
+gen("baseline_panda", PANDA)
+
+ckpt = sorted(Path("/kaggle/input").rglob("lora_weights.pt"))[0]
+print("Using LoRA:", ckpt, flush=True)
+pipe.transformer.add_adapter(LoraConfig(r=64, lora_alpha=64, target_modules=["to_q", "to_k", "to_v", "to_out.0"],
+                                        init_lora_weights=True))
+res = set_peft_model_state_dict(pipe.transformer, torch.load(ckpt, map_location="cpu"))
+print("LoRA loaded, unexpected keys:", len(getattr(res, "unexpected_keys", None) or []), flush=True)
+for p in pipe.transformer.parameters():
+    if p.dtype != torch.float16:
+        p.data = p.data.to(torch.float16)
+gen("lora_anime", ANIME)
 print("ALL_DONE", flush=True)
