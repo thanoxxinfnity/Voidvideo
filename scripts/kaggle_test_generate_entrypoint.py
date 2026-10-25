@@ -80,12 +80,23 @@ def decode_latents(pipe, latents):
     return video.cpu()
 
 
-def run(pipe, tag: str, steps: int, save: bool = True):
+def run(pipe, tag: str, steps: int, save: bool = True, frames_n: int = 49, embeds=None, verbose=False):
     t0 = time.time()
+
+    def log_step(_pipe, i, t, kw):
+        lat = kw["latents"]
+        print(f"[{tag}] step {i}: latents std={lat.float().std().item():.3f} "
+              f"absmax={lat.float().abs().max().item():.2f} nan={torch.isnan(lat).any().item()}", flush=True)
+        return kw
+
+    kwargs = dict(prompt_embeds=embeds[0], negative_prompt_embeds=embeds[1]) if embeds else \
+        dict(prompt=PROMPT, negative_prompt=NEGATIVE)
+    if verbose:
+        kwargs.update(callback_on_step_end=log_step, callback_on_step_end_tensor_inputs=["latents"])
     latents = pipe(
-        prompt=PROMPT, negative_prompt=NEGATIVE, num_frames=49, height=480, width=720,
+        num_frames=frames_n, height=480, width=720,
         num_inference_steps=steps, guidance_scale=GUIDANCE,
-        generator=torch.Generator("cpu").manual_seed(SEED), output_type="latent",
+        generator=torch.Generator("cpu").manual_seed(SEED), output_type="latent", **kwargs,
     ).frames
     video = decode_latents(pipe, latents)
     spread = video.float().std().item()
@@ -121,24 +132,55 @@ def attach_lora(pipe, dtype):
 
 lora_state = torch.load(find_lora(), map_location="cpu")
 
-# Stage 1: quick 6-step probe per dtype (no LoRA); the first one that decodes to a non-flat image wins.
-chosen = None
-for name, dtype in (("fp16", torch.float16), ("bf16", torch.bfloat16)):
-    pipe = load_pipe(dtype)
-    spread, _ = run(pipe, f"probe_{name}", 6, save=False)
-    if spread > 0.1:
-        chosen = (name, dtype, pipe)
-        break
-    del pipe
-    gc.collect()
-    torch.cuda.empty_cache()
-assert chosen, "both fp16 and bf16 decode to a flat image -- see probe lines in the log"
-name, dtype, pipe = chosen
-print("Using dtype", name, flush=True)
+# Stage 1: tiny probes (9 frames, 4 steps, no LoRA) over text-encoder / transformer dtype combinations.
+# CogVideoX-2B in plain fp16 gave flat (all ~-1) frames, bf16 OOMs at full length on a T4 (no
+# memory-efficient attention), so find which combination actually denoises.
+pipe = load_pipe(torch.float16)
 
+
+def embeds_for(te_dtype, out_dtype):
+    pipe.text_encoder.to(te_dtype)
+    pipe.text_encoder.to("cuda")
+    with torch.no_grad():
+        pe, ne = pipe.encode_prompt(PROMPT, NEGATIVE, do_classifier_free_guidance=True, device="cuda")
+    pipe.text_encoder.to("cpu")
+    torch.cuda.empty_cache()
+    print(f"embeds te={te_dtype}: nan={torch.isnan(pe).any().item()} inf={torch.isinf(pe).any().item()} "
+          f"absmax={pe.float().abs().max().item():.1f} std={pe.float().std().item():.3f}", flush=True)
+    return pe.to(out_dtype), ne.to(out_dtype)
+
+
+variants = [
+    ("fp16_te16", torch.float16, torch.float16),
+    ("fp16_tebf16", torch.bfloat16, torch.float16),
+    ("bf16_tebf16", torch.bfloat16, torch.bfloat16),
+    ("fp32_tebf16", torch.bfloat16, torch.float32),
+]
+chosen = None
+for name, te_dtype, tf_dtype in variants:
+    try:
+        emb = embeds_for(te_dtype, tf_dtype)
+        pipe.transformer.to(tf_dtype)
+        spread, _ = run(pipe, f"probe_{name}", 4, save=False, frames_n=9, embeds=emb, verbose=True)
+    except Exception as e:  # keep probing the remaining variants
+        print(f"[probe_{name}] FAILED: {type(e).__name__}: {str(e)[:200]}", flush=True)
+        torch.cuda.empty_cache()
+        continue
+    if spread > 0.1 and chosen is None:
+        chosen = (name, te_dtype, tf_dtype)
+assert chosen, "no dtype combination decodes to a real image -- see probe lines in the log"
+name, te_dtype, dtype = chosen
+print("Using", name, flush=True)
+if dtype != torch.float16:
+    # bf16/fp32 attention falls back to a ~70GB score matrix at 49 frames on a T4, so the full
+    # clip cannot run in this setup; stop here and let the probe lines in the log decide the next step.
+    print("PROBES_DONE: only a non-fp16 variant works; full-length run would OOM, stopping.", flush=True)
+    sys.exit(0)
 # Stage 2: full-quality clips; LoRA first so it is saved even if the second run runs out of time.
+emb = embeds_for(te_dtype, dtype)
+pipe.transformer.to(dtype)
 attach_lora(pipe, dtype)
-run(pipe, "with_lora", STEPS)
+run(pipe, "with_lora", STEPS, embeds=emb)
 pipe.transformer.disable_adapters()
-run(pipe, "base_no_lora", STEPS)
+run(pipe, "base_no_lora", STEPS, embeds=emb)
 print("ALL_DONE", flush=True)
