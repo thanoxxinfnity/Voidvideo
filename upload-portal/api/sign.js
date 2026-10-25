@@ -16,7 +16,7 @@ module.exports = async (req, res) => {
     return;
   }
 
-  const { tag } = req.body || {};
+  const { tag, caption } = req.body || {};
   if (!ALLOWED_TAGS.includes(tag)) {
     res.status(400).json({ error: `tag must be one of: ${ALLOWED_TAGS.join(", ")}` });
     return;
@@ -24,10 +24,13 @@ module.exports = async (req, res) => {
 
   const timestamp = Math.round(Date.now() / 1000);
   const folder = `voidvideo/${tag}`;
+  // A caption written by /api/caption before the upload is attached as
+  // Cloudinary "context" metadata, so it's a signed param like the others.
+  const context = caption && typeof caption === "string" ? `caption=${escapeContextValue(caption.slice(0, 500))}` : undefined;
 
   // Cloudinary signature: sha1 of alphabetically-sorted "key=value" pairs
   // (excluding file/api_key/signature/resource_type) + api_secret, no delimiters.
-  const paramsToSign = { folder, tags: tag, timestamp };
+  const paramsToSign = { folder, tags: tag, timestamp, ...(context ? { context } : {}) };
   const toSign = Object.keys(paramsToSign)
     .sort()
     .map((k) => `${k}=${paramsToSign[k]}`)
@@ -41,8 +44,15 @@ module.exports = async (req, res) => {
     signature,
     folder,
     tags: tag,
+    ...(context ? { context } : {}),
   });
 };
+
+// Cloudinary context values use "|" to separate key=value pairs, so literal
+// backslash/pipe/equals characters in the caption text must be escaped.
+function escapeContextValue(v) {
+  return v.replace(/\\/g, "\\\\").replace(/\|/g, "\\|").replace(/=/g, "\\=");
+}
 
 function readCloudinaryEnv() {
   return {

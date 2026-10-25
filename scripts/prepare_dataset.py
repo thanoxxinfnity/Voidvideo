@@ -160,9 +160,10 @@ def main():
         rows.append({"video": f"clips/{dst.name}", "caption": caption})
         print(f"  ok   {src.name} -> {dst.name}  caption={'yes' if caption else 'EMPTY'}")
 
-    with open(METADATA_PATH, "w") as f:
-        for row in rows:
-            f.write(json.dumps(row) + "\n")
+    for path in (METADATA_PATH, PROCESSED_DIR / "metadata_full.jsonl"):
+        with open(path, "w") as f:
+            for row in rows:
+                f.write(json.dumps(row) + "\n")
 
     print(f"\nWrote {len(rows)} clips to {CLIPS_OUT_DIR}")
     print(f"Wrote metadata to {METADATA_PATH}")
