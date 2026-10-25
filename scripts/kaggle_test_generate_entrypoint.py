@@ -16,6 +16,10 @@ subprocess.run(
     check=True,
 )
 
+# Kaggle ships torchao 0.10.0, which peft rejects as incompatible; uninstalling makes
+# is_torchao_available() a clean False (same workaround as training/kaggle_entrypoint.py).
+subprocess.run([sys.executable, "-m", "pip", "uninstall", "-y", "-q", "torchao"], check=False)
+
 import torch  # noqa: E402
 from diffusers import CogVideoXPipeline  # noqa: E402
 from diffusers.utils import export_to_video  # noqa: E402
