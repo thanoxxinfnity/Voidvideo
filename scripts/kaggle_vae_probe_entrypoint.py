@@ -41,7 +41,7 @@ for t in range(T):
 x = torch.from_numpy(vid).permute(1, 0, 2, 3).unsqueeze(0).to("cuda")  # B,C,T,H,W
 stats("input", x)
 
-for tiling in (False, True):
+for tiling in (True,):
     if tiling:
         vae.enable_tiling()
     else:
@@ -66,7 +66,7 @@ lat = pipe(
     generator=torch.Generator("cpu").manual_seed(1), output_type="latent",
 ).frames
 stats(f"denoised latents ({(time.time() - t0) / 60:.1f} min)", lat)
-for tiling in (False, True):
+for tiling in (True,):
     v = AutoencoderKLCogVideoX.from_pretrained(MODEL_ID, subfolder="vae", torch_dtype=torch.float32).to("cuda")
     if tiling:
         v.enable_tiling()
