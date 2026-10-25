@@ -21,6 +21,11 @@ KERNEL_SLUG_DEFAULT = "voidvideo-test-generate"
 
 
 def main():
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--entrypoint", default=str(ENTRYPOINT_SRC),
+                        help="Kernel script to push (default: the test-generate script).")
+    entrypoint = Path(parser.parse_args().entrypoint)
     load_dotenv(REPO_ROOT / ".env")
     from kaggle.api.kaggle_api_extended import KaggleApi
 
@@ -33,7 +38,7 @@ def main():
     if STAGING_DIR.exists():
         shutil.rmtree(STAGING_DIR)
     STAGING_DIR.mkdir()
-    code = ENTRYPOINT_SRC.read_text()
+    code = entrypoint.read_text()
     hf_token = os.environ.get("HF_TOKEN")
     if hf_token:
         code = f'import os as _os; _os.environ["HF_TOKEN"] = {hf_token!r}\n' + code
