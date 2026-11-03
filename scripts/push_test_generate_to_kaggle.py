@@ -25,14 +25,16 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--entrypoint", default=str(ENTRYPOINT_SRC),
                         help="Kernel script to push (default: the test-generate script).")
-    entrypoint = Path(parser.parse_args().entrypoint)
+    parser.add_argument("--slug", default=KERNEL_SLUG_DEFAULT, help="Kernel slug (use a different one to run alongside another kernel).")
+    cli = parser.parse_args()
+    entrypoint = Path(cli.entrypoint)
     load_dotenv(REPO_ROOT / ".env")
     from kaggle.api.kaggle_api_extended import KaggleApi
 
     api = KaggleApi()
     api.authenticate()
     username = os.environ.get("KAGGLE_USERNAME") or api.get_config_value("username")
-    kernel_slug = f"{username}/{KERNEL_SLUG_DEFAULT}"
+    kernel_slug = f"{username}/{cli.slug}"
     ckpt_slug = os.environ.get("KAGGLE_CHECKPOINT_DATASET_SLUG") or f"{username}/voidvideo-lora-checkpoint-t2v"
 
     if STAGING_DIR.exists():
@@ -45,7 +47,7 @@ def main():
     (STAGING_DIR / "kaggle_entrypoint.py").write_text(code)
     (STAGING_DIR / "kernel-metadata.json").write_text(json.dumps({
         "id": kernel_slug,
-        "title": KERNEL_SLUG_DEFAULT,
+        "title": cli.slug,
         "code_file": "kaggle_entrypoint.py",
         "language": "python",
         "kernel_type": "script",
