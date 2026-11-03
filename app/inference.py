@@ -15,9 +15,11 @@ CONFIG_PATH = REPO_ROOT / "configs" / "training_config.yaml"
 
 _pipelines: dict = {}
 
-# CogVideoX generates at its native 8 fps; the exported clip is upsampled to
-# this fps afterwards with ffmpeg motion interpolation (CPU-only post-process,
-# no extra GPU memory). Falls back to the native-fps file if ffmpeg fails.
+# CogVideoX generates at its native 8 fps; the exported clip is re-timed to
+# this fps afterwards by repeating frames (anime is usually drawn "on threes"
+# anyway). ffmpeg minterpolate was tried first but smeared/blocked fast motion
+# (faces and arms tore apart between frames). Falls back to the native-fps
+# file if ffmpeg fails.
 OUTPUT_FPS = 24
 
 
@@ -27,7 +29,7 @@ def _interpolate_to_output_fps(src_path: str) -> str:
         subprocess.run(
             [
                 "ffmpeg", "-y", "-i", src_path,
-                "-filter:v", f"minterpolate=fps={OUTPUT_FPS}:mi_mode=mci:mc_mode=aobmc:vsbmc=1",
+                "-filter:v", f"fps={OUTPUT_FPS}",
                 "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "18",
                 dst_path,
             ],

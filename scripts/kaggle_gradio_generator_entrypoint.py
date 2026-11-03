@@ -62,7 +62,7 @@ def interpolate_to_output_fps(src_path: str) -> str:
         subprocess.run(
             [
                 "ffmpeg", "-y", "-i", src_path,
-                "-filter:v", f"minterpolate=fps={OUTPUT_FPS}:mi_mode=mci:mc_mode=aobmc:vsbmc=1",
+                "-filter:v", f"fps={OUTPUT_FPS}",
                 "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "18",
                 dst_path,
             ],

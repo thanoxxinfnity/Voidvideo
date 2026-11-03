@@ -57,7 +57,7 @@ def interpolate(src):
     dst = src.with_name(src.stem + "_24fps.mp4")
     try:
         subprocess.run([imageio_ffmpeg.get_ffmpeg_exe(), "-y", "-i", str(src), "-filter:v",
-                        "minterpolate=fps=24:mi_mode=mci:mc_mode=aobmc:vsbmc=1", "-c:v", "libx264",
+                        "fps=24", "-c:v", "libx264",
                         "-pix_fmt", "yuv420p", "-crf", "18", str(dst)], check=True, capture_output=True, timeout=400)
         return dst
     except Exception as e:
