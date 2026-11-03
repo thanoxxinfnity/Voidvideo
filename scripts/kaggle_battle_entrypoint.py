@@ -21,19 +21,19 @@ OUT = Path("/kaggle/working")
 STYLE = "2D anime film style, hand-drawn cel animation, clean ink outlines, flat colors, smooth motion"
 # One character and one action per shot: the 2B model garbles scenes with two interacting characters.
 BASE_SHOTS = [
-    ("slash",
+    # Prompt A: the original wording (the character snapped back to a rest pose after the slash, causing a pulse).
+    ("slashA",
      "Medium shot, static camera. A shirtless muscular man with spiky pink hair and black tattoo markings on his face "
      "swings his right arm in one fast diagonal slash, thin white-red slash lines streak through the air in front of "
      "him, ruined city street behind him. " + STYLE),
-    ("charge",
-     "Close-up, static camera. A young man with white hair and a black blindfold holds two fingers of his right hand "
-     "forward. A blue glowing orb and a red glowing orb float in from the left and right and slowly merge in front of "
-     "his fingers into one bright purple glowing orb. " + STYLE),
-    ("blast",
-     "Wide shot, static camera. A huge glowing purple energy sphere shoots forward down an empty ruined city street "
-     "as a giant purple beam, destroying buildings, debris and dust flying, bright white flash. " + STYLE),
+    # Prompt B: one continuous swing that ends in a held pose, so the model has no reason to reset.
+    ("slashB",
+     "Medium shot, static camera. A shirtless muscular man with spiky pink hair and black tattoo markings on his face "
+     "winds his arm back, then sweeps it forward in one continuous diagonal slash. A red and white slash trail follows "
+     "his hand and stays glowing in the air. He finishes with his arm fully extended and holds the pose with a fierce "
+     "expression, ruined city street behind him. " + STYLE),
 ]
-SEEDS = [11, 22]
+SEEDS = [33, 44, 55]
 SHOTS = [(f"{name}_s{seed}", prompt, seed) for name, prompt in BASE_SHOTS for seed in SEEDS]
 
 
