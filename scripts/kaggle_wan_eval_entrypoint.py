@@ -29,6 +29,13 @@ PROMPTS = [
                    "widen and her mouth opens slightly. " + STYLE),
     ("secondary", "Medium shot, static camera. A girl with long hair and a pleated skirt stands on a rooftop while a "
                   "strong wind blows her hair and skirt, the cloth fluttering. " + STYLE),
+    # Sharper motion wording for the two weakest categories of the 350-step run.
+    ("locomotion2", "Side view, tracking shot. A young woman with short black hair in a school uniform walks forward "
+                    "down a sunlit street: her left foot lifts and steps ahead, then her right foot, her knees bend "
+                    "and her arms swing in rhythm, moving clearly across the frame. " + STYLE),
+    ("gesture2", "Medium close-up, front view, static camera. A white-haired man in a dark jacket raises his right "
+                 "hand to shoulder height and waves it side to side three times while smiling at the camera, all five "
+                 "fingers clearly visible. " + STYLE),
 ]
 NEGATIVE = ("Bright tones, overexposed, static, blurred details, worst quality, low quality, JPEG artifacts, "
             "ugly, deformed, extra fingers, poorly drawn hands, poorly drawn faces, fused fingers, three legs")
