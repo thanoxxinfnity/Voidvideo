@@ -51,7 +51,11 @@ class VideoCaptionDataset(Dataset):
         else:
             # Pad short clips by repeating the last frame.
             indices = np.concatenate([np.arange(total), np.full(self.num_frames - total, total - 1)])
-        frames = vr.get_batch(indices.tolist()).float()  # (T, H, W, C), 0..255
+        frames = vr.get_batch(indices.tolist())  # (T, H, W, C), 0..255
+        if not isinstance(frames, torch.Tensor):
+            # decord's torch bridge is per-thread; worker threads get a native NDArray instead.
+            frames = torch.from_numpy(frames.asnumpy())
+        frames = frames.float()
         frames = frames.permute(0, 3, 1, 2) / 127.5 - 1.0  # (T, C, H, W), -1..1
         return frames
 

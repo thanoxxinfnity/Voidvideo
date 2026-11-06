@@ -1,4 +1,5 @@
 """Pipeline loading + generation helpers shared by the Gradio app."""
+import subprocess
 import tempfile
 from pathlib import Path
 from typing import Optional
@@ -13,6 +14,31 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = REPO_ROOT / "configs" / "training_config.yaml"
 
 _pipelines: dict = {}
+
+# CogVideoX generates at its native 8 fps; the exported clip is re-timed to
+# this fps afterwards by repeating frames (anime is usually drawn "on threes"
+# anyway). ffmpeg minterpolate was tried first but smeared/blocked fast motion
+# (faces and arms tore apart between frames). Falls back to the native-fps
+# file if ffmpeg fails.
+OUTPUT_FPS = 24
+
+
+def _interpolate_to_output_fps(src_path: str) -> str:
+    dst_path = src_path.replace(".mp4", f"_{OUTPUT_FPS}fps.mp4")
+    try:
+        subprocess.run(
+            [
+                "ffmpeg", "-y", "-i", src_path,
+                "-filter:v", f"fps={OUTPUT_FPS}",
+                "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "18",
+                dst_path,
+            ],
+            check=True, capture_output=True, timeout=180,
+        )
+        return dst_path
+    except Exception as e:
+        print(f"{OUTPUT_FPS}fps interpolation failed, returning native-fps clip: {e}", flush=True)
+        return src_path
 
 
 def _load_config(task: str) -> dict:
@@ -82,7 +108,7 @@ def generate_t2v(prompt: str, negative_prompt: str, num_inference_steps: int,
 
     out_path = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False).name
     export_to_video(frames, out_path, fps=cfg["fps"])
-    return out_path
+    return _interpolate_to_output_fps(out_path)
 
 
 def generate_i2v(image: Image.Image, prompt: str, negative_prompt: str, num_inference_steps: int,
@@ -106,4 +132,4 @@ def generate_i2v(image: Image.Image, prompt: str, negative_prompt: str, num_infe
 
     out_path = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False).name
     export_to_video(frames, out_path, fps=cfg["fps"])
-    return out_path
+    return _interpolate_to_output_fps(out_path)
