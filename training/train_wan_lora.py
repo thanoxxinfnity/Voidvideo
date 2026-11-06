@@ -21,7 +21,9 @@ import hashlib
 import os
 import random
 import sys
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import torch
@@ -152,10 +154,6 @@ def main():
 
     # ---- Latent cache (same rules as the CogVideoX script: unique clips, persisted, time-budgeted) ----
     vae.to(device)
-    try:
-        vae.enable_tiling()
-    except Exception:
-        pass
     mean = torch.tensor(vae.config.latents_mean).view(1, -1, 1, 1, 1)
     inv_std = (1.0 / torch.tensor(vae.config.latents_std)).view(1, -1, 1, 1, 1)
 
@@ -197,23 +195,52 @@ def main():
                 order.append(by_cat[cat].pop(0))
 
     latents_by_video = {}
-    encoded_now = 0
+    todo = []
     for video, i in order:
         f = find_cached(video)
         if f is not None:
             latents_by_video[video] = torch.load(f, map_location="cpu").to(weight_dtype)
-            continue
-        if time.time() - t_start > budget:
-            continue
-        frames = dataset[i]["frames"][:n_frames]
-        lat = encode_video(vae, frames, mean, inv_std).to(weight_dtype)
-        latents_by_video[video] = lat
-        torch.save(lat, cache_dir / cache_name(video))
-        encoded_now += 1
-        torch.cuda.empty_cache()
-        if encoded_now % 5 == 0 or encoded_now == 1:
-            print(f"Encoded {encoded_now} new latents ({len(latents_by_video)}/{len(order)} clips cached, "
-                  f"latent {tuple(lat.shape)}, {(time.time() - t_start) / 60:.1f} min)", flush=True)
+        else:
+            todo.append((video, i))
+
+    # Encode the rest on every visible GPU in parallel (one VAE copy and one worker thread per GPU).
+    # Tiling is left off: it roughly halves speed, and the causal Wan VAE fits 33 frames untiled.
+    n_gpu = max(1, torch.cuda.device_count())
+    vaes = [vae] + [AutoencoderKLWan.from_pretrained(model_id, subfolder="vae", torch_dtype=torch.float32)
+                    for _ in range(n_gpu - 1)]
+    for g, v in enumerate(vaes):
+        v.requires_grad_(False)
+        v.to(f"cuda:{g}")
+    print(f"Encoding {len(todo)} uncached clips on {n_gpu} GPU(s).", flush=True)
+    lock = threading.Lock()
+    counter = {"n": 0}
+
+    def encode_worker(g: int):
+        v = vaes[g]
+        for video, i in todo[g::n_gpu]:
+            if time.time() - t_start > budget:
+                return
+            frames = dataset[i]["frames"][:n_frames]
+            try:
+                lat = encode_video(v, frames, mean, inv_std)
+            except torch.OutOfMemoryError:
+                torch.cuda.empty_cache()
+                v.enable_tiling()
+                lat = encode_video(v, frames, mean, inv_std)
+            lat = lat.to(weight_dtype)
+            torch.save(lat, cache_dir / cache_name(video))
+            with torch.cuda.device(g):
+                torch.cuda.empty_cache()
+            with lock:
+                latents_by_video[video] = lat
+                counter["n"] += 1
+                if counter["n"] % 10 == 0 or counter["n"] == 1:
+                    print(f"Encoded {counter['n']}/{len(todo)} new latents (latent {tuple(lat.shape)}, "
+                          f"{(time.time() - t_start) / 60:.1f} min)", flush=True)
+
+    with ThreadPoolExecutor(max_workers=n_gpu) as pool:
+        list(pool.map(encode_worker, range(n_gpu)))
+    encoded_now = counter["n"]
 
     cached = [
         (latents_by_video[row["video"]], caption_index[row.get("caption", "")])
@@ -223,7 +250,7 @@ def main():
           f"training on {len(cached)}/{len(dataset.rows)} rows.", flush=True)
     if not cached:
         raise RuntimeError("No latents available to train on (encode budget too small?).")
-    del vae
+    del vae, vaes
     gc.collect()
     torch.cuda.empty_cache()
 
