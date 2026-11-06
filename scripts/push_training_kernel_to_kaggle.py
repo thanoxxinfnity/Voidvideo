@@ -49,12 +49,15 @@ def current_git_remote_url() -> str:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--task", choices=["t2v", "i2v"], default="t2v")
+    parser.add_argument("--task", choices=["t2v", "i2v", "wan_t2v"], default="t2v")
     parser.add_argument("--ref", default=None,
                          help="Git branch/tag/commit the Kaggle kernel should clone. Defaults to current branch.")
     parser.add_argument("--max-train-steps", type=int, default=None,
                         help="Override max_train_steps for this session (the counter resets each "
                              "session, so use it to cap the final relay session).")
+    parser.add_argument("--env", action="append", default=[], metavar="KEY=VALUE",
+                        help="Extra env var baked into the staged entrypoint (repeatable), e.g. "
+                             "--env PRECOMPUTE_BUDGET_SEC=900.")
     args = parser.parse_args()
 
     load_dotenv(REPO_ROOT / ".env")
@@ -111,12 +114,16 @@ def main():
         'REPO_GIT_REF = "claude/voidvideo-anime-model-bl0lor"  # rewritten at push time',
         f'REPO_GIT_REF = "{ref}"  # rewritten at push time',
     ).replace(
-        'TRAIN_TASK = "t2v"  # rewritten at push time; "t2v" or "i2v"',
-        f'TRAIN_TASK = "{args.task}"  # rewritten at push time; "t2v" or "i2v"',
+        'TRAIN_TASK = "t2v"  # rewritten at push time; "t2v", "i2v" or "wan_t2v"',
+        f'TRAIN_TASK = "{args.task}"  # rewritten at push time; "t2v", "i2v" or "wan_t2v"',
     )
     if args.max_train_steps:
         entrypoint_code = f'import os as _os2; _os2.environ["MAX_TRAIN_STEPS"] = "{args.max_train_steps}"\n' + entrypoint_code
         print(f"Capping this session at MAX_TRAIN_STEPS={args.max_train_steps}.")
+    for kv in args.env:
+        key, _, val = kv.partition("=")
+        entrypoint_code = f'import os as _os3; _os3.environ[{key!r}] = {val!r}\n' + entrypoint_code
+        print(f"Setting {key}={val} for this session.")
     hf_token = os.environ.get("HF_TOKEN")
     if hf_token:
         # Same pattern as push_gradio_generator_to_kaggle.py: injected only

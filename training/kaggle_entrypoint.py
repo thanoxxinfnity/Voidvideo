@@ -32,7 +32,7 @@ from pathlib import Path
 
 REPO_GIT_URL = "https://github.com/thanoxxinfnity/Voidvideo.git"  # rewritten at push time
 REPO_GIT_REF = "claude/voidvideo-anime-model-bl0lor"  # rewritten at push time
-TRAIN_TASK = "t2v"  # rewritten at push time; "t2v" or "i2v"
+TRAIN_TASK = "t2v"  # rewritten at push time; "t2v", "i2v" or "wan_t2v"
 
 KAGGLE_INPUT = Path("/kaggle/input")
 WORKING_DIR = Path("/kaggle/working")
@@ -111,7 +111,7 @@ def find_resume_checkpoint() -> Path | None:
 
 def main():
     task = os.environ.get("TRAIN_TASK", TRAIN_TASK)
-    assert task in ("t2v", "i2v"), f"Unknown TRAIN_TASK={task}"
+    assert task in ("t2v", "i2v", "wan_t2v"), f"Unknown TRAIN_TASK={task}"
 
     if not REPO_DIR.exists():
         run(["git", "clone", "--branch", REPO_GIT_REF, "--depth", "1", REPO_GIT_URL, str(REPO_DIR)])
@@ -119,6 +119,10 @@ def main():
     sys.path.insert(0, str(REPO_DIR))
 
     run(["pip", "install", "-q", "-r", "requirements.txt"])
+    if task == "wan_t2v":
+        # Wan needs diffusers >= 0.33; these are the versions verified with Wan2.1-1.3B on a Kaggle T4.
+        run(["pip", "install", "-q", "-U", "diffusers==0.35.2", "transformers==4.57.3", "ftfy", "sentencepiece"])
+        os.environ.setdefault("LATENT_CACHE_DIR", str(WORKING_DIR / "outputs" / "wan_latent_cache"))
     # Kaggle's base image ships torchao 0.10.0. A recent peft release probes
     # is_torchao_available() while dispatching LoRA layers -- even though we
     # never asked for torchao-backed quantized LoRA -- and raises ImportError
@@ -153,7 +157,7 @@ def main():
         "accelerate", "launch",
         "--num_processes", "1",
         "--mixed_precision", "fp16",
-        "training/train_lora.py",
+        "training/train_wan_lora.py" if task == "wan_t2v" else "training/train_lora.py",
         "--task", task,
         "--config", "configs/training_config.yaml",
     ]

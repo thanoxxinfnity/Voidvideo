@@ -65,6 +65,31 @@ i2v:
   validation_prompt: "a hand-drawn anime girl walking through a rain-soaked street at night, traditional 2D animation, natural line-art, smooth timing"
   seed: 42
 
+# Wan2.1-T2V-1.3B (Apache-2.0, Hugging Face). Flow-matching LoRA, see training/train_wan_lora.py.
+# 33 frames of the stored 49-frame clips (first 33, natural speed) at 480x720 keeps a step affordable on a T4.
+wan_t2v:
+  base_model_id: "Wan-AI/Wan2.1-T2V-1.3B-Diffusers"
+  output_dir: "outputs/lora_wan_t2v"
+  num_frames: 33
+  fps: 16
+  height: 480
+  width: 720
+  lora_rank: 64
+  lora_alpha: 64
+  lora_target_modules: ["to_q", "to_k", "to_v", "to_out.0"]
+  learning_rate: 1.0e-4
+  lr_scheduler: "constant_with_warmup"
+  lr_warmup_steps: 50
+  max_train_steps: 1000
+  train_batch_size: 1
+  gradient_accumulation_steps: 4
+  gradient_checkpointing: true
+  mixed_precision: "fp16"
+  use_8bit_adam: true
+  checkpointing_steps: 25
+  flow_shift: 3.0          # 3.0 for 480p (Wan docs); matches inference
+  seed: 42
+
 dataset:
   metadata_file: "data/processed/metadata.jsonl"
   # metadata.jsonl rows already carry the "clips/" prefix (see prepare_dataset.py),
