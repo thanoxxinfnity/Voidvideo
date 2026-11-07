@@ -49,7 +49,7 @@ def current_git_remote_url() -> str:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--task", choices=["t2v", "i2v", "wan_t2v"], default="t2v")
+    parser.add_argument("--task", choices=["t2v", "i2v", "wan_t2v", "wan_t2v_24"], default="t2v")
     parser.add_argument("--ref", default=None,
                          help="Git branch/tag/commit the Kaggle kernel should clone. Defaults to current branch.")
     parser.add_argument("--max-train-steps", type=int, default=None,

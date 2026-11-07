@@ -111,7 +111,7 @@ def find_resume_checkpoint() -> Path | None:
 
 def main():
     task = os.environ.get("TRAIN_TASK", TRAIN_TASK)
-    assert task in ("t2v", "i2v", "wan_t2v"), f"Unknown TRAIN_TASK={task}"
+    assert task in ("t2v", "i2v", "wan_t2v", "wan_t2v_24"), f"Unknown TRAIN_TASK={task}"
 
     if not REPO_DIR.exists():
         run(["git", "clone", "--branch", REPO_GIT_REF, "--depth", "1", REPO_GIT_URL, str(REPO_DIR)])
@@ -119,7 +119,7 @@ def main():
     sys.path.insert(0, str(REPO_DIR))
 
     run(["pip", "install", "-q", "-r", "requirements.txt"])
-    if task == "wan_t2v":
+    if task.startswith("wan"):
         # Wan needs diffusers >= 0.33; these are the versions verified with Wan2.1-1.3B on a Kaggle T4.
         run(["pip", "install", "-q", "-U", "diffusers==0.35.2", "transformers==4.57.3", "ftfy", "sentencepiece"])
         os.environ.setdefault("LATENT_CACHE_DIR", str(WORKING_DIR / "outputs" / "wan_latent_cache"))
@@ -157,7 +157,7 @@ def main():
         "accelerate", "launch",
         "--num_processes", "1",
         "--mixed_precision", "fp16",
-        "training/train_wan_lora.py" if task == "wan_t2v" else "training/train_lora.py",
+        "training/train_wan_lora.py" if task.startswith("wan") else "training/train_lora.py",
         "--task", task,
         "--config", "configs/training_config.yaml",
     ]

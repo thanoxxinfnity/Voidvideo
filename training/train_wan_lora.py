@@ -47,7 +47,7 @@ TEXT_LEN = 512  # WanPipeline's max_sequence_length
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--task", choices=["wan_t2v"], required=True)
+    parser.add_argument("--task", choices=["wan_t2v", "wan_t2v_24"], required=True)
     parser.add_argument("--config", default=str(REPO_ROOT / "configs" / "training_config.yaml"))
     parser.add_argument("--resume_from_checkpoint", default=None,
                         help="Path to a previous LoRA checkpoint dir to resume from.")

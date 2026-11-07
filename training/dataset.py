@@ -43,8 +43,8 @@ class VideoCaptionDataset(Dataset):
     def __len__(self) -> int:
         return len(self.rows)
 
-    def _load_frames(self, video_path: Path) -> torch.Tensor:
-        vr = decord.VideoReader(str(video_path), width=self.width, height=self.height)
+    def _load_frames(self, video_path: Path, width: int, height: int) -> torch.Tensor:
+        vr = decord.VideoReader(str(video_path), width=width, height=height)
         total = len(vr)
         if total >= self.num_frames:
             indices = np.linspace(0, total - 1, self.num_frames).astype(int)
@@ -62,7 +62,8 @@ class VideoCaptionDataset(Dataset):
     def __getitem__(self, idx: int) -> dict:
         row = self.rows[idx]
         video_path = self.video_root / row["video"]
-        frames = self._load_frames(video_path)
+        # Rows may carry their own size (the 24 fps set keeps portrait clips portrait).
+        frames = self._load_frames(video_path, row.get("width", self.width), row.get("height", self.height))
 
         caption = row.get("caption", "")
         if caption and random.random() < self.caption_dropout:

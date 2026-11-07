@@ -90,6 +90,32 @@ wan_t2v:
   flow_shift: 3.0          # 3.0 for 480p (Wan docs); matches inference
   seed: 42
 
+# Wan LoRA continued on the 24 fps anime-timing set (scripts/prepare_24fps_windows.py): consecutive 24 fps
+# frames keep ones/twos/threes and holds, and each caption ends with its timing tag. Resumes from the
+# 500-step wan_t2v LoRA (attach that checkpoint dataset), so a lower learning rate keeps the learned style.
+wan_t2v_24:
+  base_model_id: "Wan-AI/Wan2.1-T2V-1.3B-Diffusers"
+  output_dir: "outputs/lora_wan_t2v_24"
+  num_frames: 49
+  fps: 24
+  height: 480            # per-clip width/height in metadata.jsonl override these
+  width: 720
+  lora_rank: 64
+  lora_alpha: 64
+  lora_target_modules: ["to_q", "to_k", "to_v", "to_out.0"]
+  learning_rate: 5.0e-5
+  lr_scheduler: "constant_with_warmup"
+  lr_warmup_steps: 25
+  max_train_steps: 280
+  train_batch_size: 1
+  gradient_accumulation_steps: 4
+  gradient_checkpointing: true
+  mixed_precision: "fp16"
+  use_8bit_adam: true
+  checkpointing_steps: 25
+  flow_shift: 3.0
+  seed: 42
+
 dataset:
   metadata_file: "data/processed/metadata.jsonl"
   # metadata.jsonl rows already carry the "clips/" prefix (see prepare_dataset.py),
