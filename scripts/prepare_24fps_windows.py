@@ -76,6 +76,8 @@ def main():
     ap.add_argument("--list", required=True)
     ap.add_argument("--raw", required=True)
     ap.add_argument("--out", required=True)
+    ap.add_argument("--only-24", action="store_true",
+                    help="skip clips that are not ~24 fps (resampling 30/60 fps footage breaks its holds)")
     args = ap.parse_args()
 
     listing = json.load(open(args.list))
@@ -90,9 +92,15 @@ def main():
                 print("missing", src)
                 continue
             sw, sh, n, fps = probe(src)
+            if args.only_24 and not 23.9 <= fps <= 24.1:
+                print("skip (fps)", src.name, round(fps, 2))
+                continue
             portrait = sh > sw
             w, h = (SHORT_SIDE, LONG_SIDE) if portrait else (LONG_SIDE, SHORT_SIDE)
             n24 = int(n * 24 / fps) if n else 96
+            if n24 < WINDOW:
+                print("skip (short)", src.name, n24)
+                continue
             starts = [0] + ([n24 - WINDOW] if n24 - WINDOW >= WINDOW - 4 else [])
             caption = (c.get("caption") or f"An anime clip showing {category.replace('-', ' ')}.").strip()
             for k, start in enumerate(starts):
