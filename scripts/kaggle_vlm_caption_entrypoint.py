@@ -13,6 +13,7 @@ from pathlib import Path
 
 REPO_GIT_URL = "https://github.com/thanoxxinfnity/Voidvideo.git"
 REPO_GIT_REF = "claude/claude-md-jfha3c"
+LIMIT = 0   # >0: only the first N windows per GPU (quick quality test)
 WORK = Path("/kaggle/working")
 REPO = WORK / "voidvideo"
 
@@ -45,7 +46,8 @@ for g in range(n_gpu):
     env = dict(os.environ, CUDA_VISIBLE_DEVICES=str(g))
     procs.append(subprocess.Popen(
         [sys.executable, str(REPO / "scripts" / "vlm_caption_clips.py"), "--data", str(data),
-         "--out", str(WORK / f"cap_shard{g}.jsonl"), "--shard", str(g), "--nshards", str(n_gpu)], env=env))
+         "--out", str(WORK / f"cap_shard{g}.jsonl"), "--shard", str(g), "--nshards", str(n_gpu)]
+        + (["--limit", str(LIMIT)] if LIMIT else []), env=env))
 codes = [p.wait() for p in procs]
 print("shard exit codes:", codes, flush=True)
 
