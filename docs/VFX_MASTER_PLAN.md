@@ -45,3 +45,14 @@ to add: `speed` (slow motion / normal / fast) and `physics`. Then prefix the tri
 4. Train v4 (cache the encodes; ~2000-window balanced subset first, then the rest).
 5. Evaluate per category (6 prompts each), fix weak categories by adding data, repeat.
 6. Studio app: Hinglish prompt -> English, take picking, retime, upscale, layers.
+
+## 5. Data status (8 Nov)
+Dataset `voidvideo-anime-clips-24fps-v4`: 5835 windows (49 frames, 24 fps, 720x480 or 480x720) = Vault 286 + Sakuga 3786
+(creatures 596, animals 463, crowd 292, fighting 578, expressions ~690, locomotion ~470, secondary motion ~400, vfx 524)
++ per-effect VFX 1343 (ice, impact, beam, explosion, morph, fire, wind/debris, lightning, smoke/sparks, water, ~135 each)
++ synthetic motion graphics 420 (countdown, quiz, versus, geometric loops, waves, coin rain, tunnel).
+
+Known gaps: **gestures are thin (58 windows)** - Sakugabooru has no gesture tag. Fix: after VLM captioning, search the
+captions of "character acting" / expression windows for hand-gesture words (waves, points, clenches fist, beckons, shrugs)
+and re-bucket them; add a synthetic hand-gesture set later. Camera moves, slow motion/time freeze and portals/auras have no
+direct tag either: rely on the VLM `camera`/`speed` fields and the Blender virtual-camera set (Section 1, TODO).
