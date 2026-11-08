@@ -19,12 +19,21 @@ PHRASES = {
     "character acting": "expressive character acting", "crying": "a character crying",
     "dancing": "a character dancing", "falling": "falling", "flying": "flying", "rotation": "turning around",
     "animals": "animals moving", "creatures": "a fantasy creature", "mecha": "a giant robot", "sports": "sports action", "crowd": "a crowd",
-    "background animation": "with an animated background", "ice": "ice",
+    "background animation": "with an animated background", "ice": "ice", "morphing": "morphing shapes",
+    "henshin": "a transformation sequence",
 }
 LEAD = {"fighting": "Anime fight scene", "vfx": "Anime effects animation", "locomotion": "Anime character motion",
         "secondary-motion": "Anime secondary motion", "expressions": "Anime character acting close to the camera",
         "creatures": "Anime monster and creature animation", "animals": "Anime animal animation",
         "crowd": "Anime crowd scene with many characters"}
+
+
+VFX_LEAD = {"vfx-morph": "Anime transformation and morphing effects", "vfx-ice": "Anime ice and freezing effects",
+            "vfx-lightning": "Anime lightning effects", "vfx-beam": "Anime energy beam effects",
+            "vfx-impact": "Anime impact frames and hit effects", "vfx-water": "Anime water and liquid effects",
+            "vfx-fire": "Anime fire effects", "vfx-explosion": "Anime explosion effects",
+            "vfx-wind-debris": "Anime wind and flying debris effects", "vfx-smoke-sparks": "Anime smoke and sparks effects"}
+LEAD.update(VFX_LEAD)
 
 
 def caption(cat, tags):
