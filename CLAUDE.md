@@ -21,6 +21,30 @@ video only — no audio/voice generation.
   `upload-portal/README.md`.
 - Everything is pushed to branch `claude/voidvideo-anime-model-bl0lor`.
 
+## Current state (Nov 2026) — read this before anything else
+**Branch `claude/claude-md-jfha3c`** has everything below. Kaggle account `tejassinghthanos` (token = KAGGLE_API_TOKEN,
+HF token in `.env`; the user keeps a backup file of both and re-pastes them if a session starts empty).
+- **Base model switched to Wan2.1-T2V-1.3B** (Apache-2.0, HF `Wan-AI/Wan2.1-T2V-1.3B-Diffusers`), far better than CogVideoX-2B
+  (hands, motion, expressions). CogVideoX LoRA (1000 steps) still exists as a fallback: dataset `voidvideo-lora-checkpoint-t2v`.
+- **Wan LoRAs (rank 64):** `voidvideo-lora-checkpoint-wan-500` (8 fps clips, 500 steps), `voidvideo-lora-checkpoint-wan24`
+  (continued on 24 fps windows, step 225). Training: `training/train_wan_lora.py`, tasks `wan_t2v` / `wan_t2v_24` in
+  `configs/training_config.yaml`, launched with `scripts/push_training_kernel_to_kaggle.py --task wan_t2v_24 --max-train-steps N`
+  (set `KAGGLE_DATASET_SLUG`, `KAGGLE_KERNEL_SLUG`, `KAGGLE_CHECKPOINT_DATASET_SLUG`, `KAGGLE_LATENT_CACHE_DATASET_SLUG` env vars).
+  ~154 s/step at 49 frames, 12 h session cap, 2 T4s; latent encode runs on both GPUs in parallel.
+- **Data (24 fps, anime timing kept):** `scripts/prepare_24fps_windows.py` cuts 49-frame windows and tags ones/twos/threes.
+  Datasets on Kaggle: `voidvideo-anime-clips-24fps` (286, Vault), `-v2` (1244), `-v3` (4072 incl. creatures/animals/crowd from
+  Sakugabooru `trojblue/sakugabooru2025` via `scripts/sakuga_to_listing.py`). Vault clips live at `voidvideo-vault.vercel.app`
+  (`/api/list?tag=...`, Cloudinary cloud `gttvsok7`); some Vault clips are NOT anime (live action) — the VLM flags them.
+- **Captions:** `scripts/vlm_caption_clips.py` (Qwen3-VL-4B, count/subjects/action/camera/effects/style) via
+  `scripts/kaggle_vlm_caption_entrypoint.py`; tested OK, full run (~4 h GPU) planned after the 14 Nov quota reset.
+- **Inference rules that matter:** fp16 pipeline, fp32 VAE decode, 30-50 steps, explicit motion wording ("left foot lifts...") and
+  caption-style prompts ("expression shifts from X to Y"); `scripts/anime_retime.py --adaptive` picks ones/twos/threes/holds.
+  Model pack zip (CogVideoX era) was sent to the user; update it with the Wan LoRA when done.
+- **Kaggle weekly GPU quota 30 h, resets Saturday 00:00Z.** Never leave stray GPU kernels running; `kaggle kernels delete` stops one.
+- User wants: studio-level anime (monsters, animals, crowds, multi-character, correct body language), "ones/twos/threes" timing,
+  later a "studio" app (generate → takes → fix → layers → upscale). Plans: original characters only (copyright), own game engine
+  is a separate project of the user.
+
 ## Known blocker: this sandbox's network policy
 The Claude Code sandbox this was built in blocks outbound HTTPS to
 `api.vercel.com`, `app.netlify.com`/`api.netlify.com`, and
