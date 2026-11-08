@@ -18,11 +18,13 @@ PHRASES = {
     "hair": "hair moving", "fabric": "fabric and clothes fluttering", "wind": "in the wind",
     "character acting": "expressive character acting", "crying": "a character crying",
     "dancing": "a character dancing", "falling": "falling", "flying": "flying", "rotation": "turning around",
-    "animals": "animals", "creatures": "creatures", "sports": "sports action", "crowd": "a crowd",
+    "animals": "animals moving", "creatures": "a fantasy creature", "mecha": "a giant robot", "sports": "sports action", "crowd": "a crowd",
     "background animation": "with an animated background", "ice": "ice",
 }
 LEAD = {"fighting": "Anime fight scene", "vfx": "Anime effects animation", "locomotion": "Anime character motion",
-        "secondary-motion": "Anime secondary motion", "expressions": "Anime character acting close to the camera"}
+        "secondary-motion": "Anime secondary motion", "expressions": "Anime character acting close to the camera",
+        "creatures": "Anime monster and creature animation", "animals": "Anime animal animation",
+        "crowd": "Anime crowd scene with many characters"}
 
 
 def caption(cat, tags):
