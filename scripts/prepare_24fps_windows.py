@@ -106,8 +106,13 @@ def main():
             for k, start in enumerate(starts):
                 name = f"{category}__{base}_w{k}.mp4"
                 dst = out / "clips" / name
-                cut_window(src, dst, start, w, h, fps)
-                tag, per_sec = timing_tag(dst, w, h)
+                try:
+                    cut_window(src, dst, start, w, h, fps)
+                    tag, per_sec = timing_tag(dst, w, h)
+                except subprocess.CalledProcessError as e:
+                    print(f"skip (ffmpeg failed) {name}: exit {e.returncode}", flush=True)
+                    dst.unlink(missing_ok=True)
+                    continue
                 stats[tag.split(" with")[0]] = stats.get(tag.split(" with")[0], 0) + 1
                 rows.append({"video": f"clips/{name}", "caption": f"{caption.rstrip('.')}, {tag}.",
                              "width": w, "height": h})
