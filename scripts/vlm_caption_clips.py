@@ -16,6 +16,7 @@ Resumable: windows already present in --out are skipped.
 """
 import argparse
 import json
+import time
 import re
 import subprocess
 import sys
@@ -142,6 +143,7 @@ def main():
 
     from PIL import Image
     n_ok = n_bad = 0
+    t_begin = time.time()
     dummy = {"count": 2, "subjects": ["human, left, spiky pink hair", "monster, right, four arms"],
              "action": "the human lunges while the monster blocks", "camera": "medium shot, static",
              "setting": "ruined street, daylight", "effects": "dust", "style": "2D hand-drawn anime"}
@@ -197,7 +199,8 @@ def main():
             fout.flush()
             done_n = start + len(chunk)
             if done_n % 24 < len(chunk) or start == 0:
-                print(f"[{done_n}/{len(todo)}] ok={n_ok} unparsable={n_bad}", flush=True)
+                print(f"[{done_n}/{len(todo)}] ok={n_ok} unparsable={n_bad} "
+                      f"({(time.time() - t_begin) / done_n:.1f}s per window)", flush=True)
     print(f"DONE ok={n_ok} unparsable={n_bad}", flush=True)
 
 
