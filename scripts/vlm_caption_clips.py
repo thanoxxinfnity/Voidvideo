@@ -36,7 +36,8 @@ PROMPT = (
     '  "action": what each subject does, in order of motion, including body language and facial expression,\n'
     '  "camera": shot size and any camera movement,\n'
     '  "setting": place, time of day and lighting,\n'
-    '  "effects": hand-drawn effects such as smoke, fire, impact frames, speed lines, or "none".\n'
+    '  "effects": hand-drawn effects such as smoke, fire, impact frames, speed lines, or "none",\n'
+    '  "style": exactly one of "2D hand-drawn anime", "3D CGI", "live action or photorealistic", "other".\n'
     "Be literal and concrete. Do not invent character names or series titles."
 )
 
@@ -93,7 +94,16 @@ def compose(v: dict, old_caption: str) -> str:
     eff = clean(v.get("effects"))
     if eff and eff.lower() != "none":
         parts.append(f"effects: {eff}")
-    tail = "Traditional 2D hand-drawn anime" + (f", {timing.group(0)}" if timing else "")
+    style = clean(v.get("style")).lower()
+    if "2d" in style or "anime" in style or "hand" in style:
+        look = "Traditional 2D hand-drawn anime"
+    elif "3d" in style:
+        look = "3D CGI animation"
+    elif "live" in style or "photo" in style:
+        look = "Live action, photorealistic footage"
+    else:
+        look = "Animation"
+    tail = look + (f", {timing.group(0)}" if timing else "")
     return ". ".join(p[0].upper() + p[1:] for p in parts if p) + f". {tail}."
 
 
@@ -104,13 +114,14 @@ def main():
     ap.add_argument("--shard", type=int, default=0)
     ap.add_argument("--nshards", type=int, default=1)
     ap.add_argument("--limit", type=int, default=0, help="only the first N windows of this shard (testing)")
+    ap.add_argument("--stride", type=int, default=1, help="take every Nth window (spread sample for quick tests)")
     ap.add_argument("--dry-run", action="store_true", help="no model: write a placeholder VLM answer")
     ap.add_argument("--max-new-tokens", type=int, default=380)
     args = ap.parse_args()
 
     data = Path(args.data)
     rows = [json.loads(line) for line in open(data / "metadata.jsonl") if line.strip()]
-    rows = rows[args.shard::args.nshards]
+    rows = rows[args.shard::args.nshards][::max(1, args.stride)]
     if args.limit:
         rows = rows[:args.limit]
     out = Path(args.out)

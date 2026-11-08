@@ -14,6 +14,7 @@ from pathlib import Path
 REPO_GIT_URL = "https://github.com/thanoxxinfnity/Voidvideo.git"
 REPO_GIT_REF = "claude/claude-md-jfha3c"
 LIMIT = 0   # >0: only the first N windows per GPU (quick quality test)
+STRIDE = 1  # >1: every Nth window instead of all (spread sample for quick tests)
 WORK = Path("/kaggle/working")
 REPO = WORK / "voidvideo"
 
@@ -47,7 +48,7 @@ for g in range(n_gpu):
     procs.append(subprocess.Popen(
         [sys.executable, str(REPO / "scripts" / "vlm_caption_clips.py"), "--data", str(data),
          "--out", str(WORK / f"cap_shard{g}.jsonl"), "--shard", str(g), "--nshards", str(n_gpu)]
-        + (["--limit", str(LIMIT)] if LIMIT else []), env=env))
+        + (["--limit", str(LIMIT)] if LIMIT else []) + ["--stride", str(STRIDE)], env=env))
 codes = [p.wait() for p in procs]
 print("shard exit codes:", codes, flush=True)
 
@@ -60,15 +61,24 @@ with open(WORK / "captions_raw.jsonl", "w") as raw:
                 r = json.loads(line)
                 new[r["video"]] = r
                 raw.write(line)
-ok = bad = 0
-with open(WORK / "metadata_vlm.jsonl", "w") as out:
+ok = bad = non_anime = 0
+with open(WORK / "metadata_vlm.jsonl", "w") as out, open(WORK / "metadata_vlm_anime_only.jsonl", "w") as only:
     for line in open(data / "metadata.jsonl"):
         r = json.loads(line)
         n = new.get(r["video"])
+        is_anime = True
         if n and n.get("vlm"):
             r["caption"] = n["caption"]
+            r["style"] = n["vlm"].get("style")
+            st = str(r["style"] or "").lower()
+            is_anime = ("2d" in st or "anime" in st or "hand" in st)
             ok += 1
         else:
             bad += 1
         out.write(json.dumps(r) + "\n")
-print(f"DONE: {ok} re-captioned, {bad} kept their old caption", flush=True)
+        if is_anime:
+            only.write(json.dumps(r) + "\n")
+        else:
+            non_anime += 1
+print(f"DONE: {ok} re-captioned, {bad} kept their old caption, {non_anime} windows are NOT 2D anime "
+      f"(left out of metadata_vlm_anime_only.jsonl)", flush=True)
