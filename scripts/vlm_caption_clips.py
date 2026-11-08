@@ -116,7 +116,8 @@ def main():
     ap.add_argument("--limit", type=int, default=0, help="only the first N windows of this shard (testing)")
     ap.add_argument("--stride", type=int, default=1, help="take every Nth window (spread sample for quick tests)")
     ap.add_argument("--dry-run", action="store_true", help="no model: write a placeholder VLM answer")
-    ap.add_argument("--max-new-tokens", type=int, default=380)
+    ap.add_argument("--max-new-tokens", type=int, default=420)
+    ap.add_argument("--batch", type=int, default=4, help="windows generated together per GPU")
     args = ap.parse_args()
 
     data = Path(args.data)
@@ -141,40 +142,62 @@ def main():
 
     from PIL import Image
     n_ok = n_bad = 0
+    dummy = {"count": 2, "subjects": ["human, left, spiky pink hair", "monster, right, four arms"],
+             "action": "the human lunges while the monster blocks", "camera": "medium shot, static",
+             "setting": "ruined street, daylight", "effects": "dust", "style": "2D hand-drawn anime"}
+
+    def hint_of(r):
+        return re.sub(r",? ?animated on [a-z ]+\.?$", "", r.get("caption", "")).strip()
+
+    def conversation(frames, r):
+        content = [{"type": "image", "image": Image.open(p).convert("RGB")} for p in frames]
+        content.append({"type": "text", "text": PROMPT.format(n=len(frames), hint=hint_of(r)[:200])})
+        return [{"role": "user", "content": content}]
+
+    def generate(convs):
+        import torch
+        inputs = processor.apply_chat_template(convs, tokenize=True, add_generation_prompt=True, return_dict=True,
+                                               return_tensors="pt", padding=True).to(model.device)
+        with torch.no_grad():
+            gen = model.generate(**inputs, max_new_tokens=args.max_new_tokens, do_sample=False)
+        return processor.batch_decode(gen[:, inputs["input_ids"].shape[1]:], skip_special_tokens=True)
+
+    if processor is not None:
+        processor.tokenizer.padding_side = "left"
     with open(out, "a") as fout, tempfile.TemporaryDirectory() as td:
-        for k, r in enumerate(todo):
-            tmp = Path(td)
-            for f in tmp.glob("*.png"):
-                f.unlink()
-            frames = extract_frames(data / r["video"], tmp)
-            hint = re.sub(r",? ?animated on [a-z ]+\.?$", "", r.get("caption", "")).strip()
+        for start in range(0, len(todo), max(1, args.batch)):
+            chunk = todo[start:start + max(1, args.batch)]
+            convs = []
+            for j, r in enumerate(chunk):
+                tmp = Path(td) / f"w{j}"
+                tmp.mkdir(exist_ok=True)
+                for f in tmp.glob("*.png"):
+                    f.unlink()
+                convs.append(conversation(extract_frames(data / r["video"], tmp), r) if not args.dry_run else None)
             if args.dry_run:
-                v = {"count": 2, "subjects": ["human, left, spiky pink hair", "monster, right, four arms"],
-                     "action": "the human lunges while the monster blocks", "camera": "medium shot, static",
-                     "setting": "ruined street, daylight", "effects": "dust"}
-                raw = json.dumps(v)
+                raws = [json.dumps(dummy)] * len(chunk)
             else:
-                import torch
-                content = [{"type": "image", "image": Image.open(p).convert("RGB")} for p in frames]
-                content.append({"type": "text", "text": PROMPT.format(n=len(frames), hint=hint[:200])})
-                inputs = processor.apply_chat_template(
-                    [{"role": "user", "content": content}], tokenize=True, add_generation_prompt=True,
-                    return_dict=True, return_tensors="pt").to(model.device)
-                with torch.no_grad():
-                    gen = model.generate(**inputs, max_new_tokens=args.max_new_tokens, do_sample=False)
-                raw = processor.batch_decode(gen[:, inputs["input_ids"].shape[1]:], skip_special_tokens=True)[0]
+                try:
+                    raws = generate(convs)
+                except Exception as e:  # e.g. OOM with a big batch: fall back to one window at a time
+                    print(f"batch failed ({type(e).__name__}: {str(e)[:120]}); retrying singly", flush=True)
+                    import torch
+                    torch.cuda.empty_cache()
+                    raws = [generate([c])[0] for c in convs]
+            for r, raw in zip(chunk, raws):
                 v = parse_json(raw)
-            if v is None:
-                n_bad += 1                      # keep the old caption for this window
-                fout.write(json.dumps({"video": r["video"], "caption": r.get("caption", ""), "vlm": None,
-                                       "raw": raw[:500], "old_caption": r.get("caption", "")}) + "\n")
-            else:
-                n_ok += 1
-                fout.write(json.dumps({"video": r["video"], "caption": compose(v, r.get("caption", "")), "vlm": v,
-                                       "old_caption": r.get("caption", "")}) + "\n")
+                if v is None:
+                    n_bad += 1                  # keep the old caption for this window
+                    fout.write(json.dumps({"video": r["video"], "caption": r.get("caption", ""), "vlm": None,
+                                           "raw": raw[:500], "old_caption": r.get("caption", "")}) + "\n")
+                else:
+                    n_ok += 1
+                    fout.write(json.dumps({"video": r["video"], "caption": compose(v, r.get("caption", "")),
+                                           "vlm": v, "old_caption": r.get("caption", "")}) + "\n")
             fout.flush()
-            if (k + 1) % 25 == 0 or k == 0:
-                print(f"[{k + 1}/{len(todo)}] ok={n_ok} unparsable={n_bad}", flush=True)
+            done_n = start + len(chunk)
+            if done_n % 24 < len(chunk) or start == 0:
+                print(f"[{done_n}/{len(todo)}] ok={n_ok} unparsable={n_bad}", flush=True)
     print(f"DONE ok={n_ok} unparsable={n_bad}", flush=True)
 
 
