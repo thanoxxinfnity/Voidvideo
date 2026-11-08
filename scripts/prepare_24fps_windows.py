@@ -78,6 +78,9 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--only-24", action="store_true",
                     help="skip clips that are not ~24 fps (resampling 30/60 fps footage breaks its holds)")
+    ap.add_argument("--allow-resample", action="store_true",
+                    help="with --only-24: still keep non-24 fps clips (resampled to 24 fps) but WITHOUT a timing tag "
+                         "(fine for VFX, where exact drawing timing matters less)")
     args = ap.parse_args()
 
     listing = json.load(open(args.list))
@@ -92,7 +95,8 @@ def main():
                 print("missing", src)
                 continue
             sw, sh, n, fps = probe(src)
-            if args.only_24 and not 23.9 <= fps <= 24.1:
+            resampled = not 23.9 <= fps <= 24.1
+            if args.only_24 and resampled and not args.allow_resample:
                 print("skip (fps)", src.name, round(fps, 2))
                 continue
             portrait = sh > sw
@@ -113,8 +117,11 @@ def main():
                     print(f"skip (ffmpeg failed) {name}: exit {e.returncode}", flush=True)
                     dst.unlink(missing_ok=True)
                     continue
-                stats[tag.split(" with")[0]] = stats.get(tag.split(" with")[0], 0) + 1
-                rows.append({"video": f"clips/{name}", "caption": f"{caption.rstrip('.')}, {tag}.",
+                if resampled:
+                    tag = ""                      # resampled footage: its hold pattern is not the artists' timing
+                key = tag.split(" with")[0] or "resampled (no tag)"
+                stats[key] = stats.get(key, 0) + 1
+                rows.append({"video": f"clips/{name}", "caption": f"{caption.rstrip('.')}{', ' + tag if tag else ''}.",
                              "width": w, "height": h})
                 print(f"{name}: {w}x{h}, {per_sec:.1f} drawings/s -> {tag}", flush=True)
     with open(out / "metadata.jsonl", "w") as f:
