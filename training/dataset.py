@@ -43,22 +43,27 @@ class VideoCaptionDataset(Dataset):
     def __len__(self) -> int:
         return len(self.rows)
 
-    def _load_frames(self, video_path: Path) -> torch.Tensor:
-        vr = decord.VideoReader(str(video_path), width=self.width, height=self.height)
+    def _load_frames(self, video_path: Path, width: int, height: int) -> torch.Tensor:
+        vr = decord.VideoReader(str(video_path), width=width, height=height)
         total = len(vr)
         if total >= self.num_frames:
             indices = np.linspace(0, total - 1, self.num_frames).astype(int)
         else:
             # Pad short clips by repeating the last frame.
             indices = np.concatenate([np.arange(total), np.full(self.num_frames - total, total - 1)])
-        frames = vr.get_batch(indices.tolist()).float()  # (T, H, W, C), 0..255
+        frames = vr.get_batch(indices.tolist())  # (T, H, W, C), 0..255
+        if not isinstance(frames, torch.Tensor):
+            # decord's torch bridge is per-thread; worker threads get a native NDArray instead.
+            frames = torch.from_numpy(frames.asnumpy())
+        frames = frames.float()
         frames = frames.permute(0, 3, 1, 2) / 127.5 - 1.0  # (T, C, H, W), -1..1
         return frames
 
     def __getitem__(self, idx: int) -> dict:
         row = self.rows[idx]
         video_path = self.video_root / row["video"]
-        frames = self._load_frames(video_path)
+        # Rows may carry their own size (the 24 fps set keeps portrait clips portrait).
+        frames = self._load_frames(video_path, row.get("width", self.width), row.get("height", self.height))
 
         caption = row.get("caption", "")
         if caption and random.random() < self.caption_dropout:
