@@ -38,7 +38,8 @@ PROMPT = (
     '  "camera": shot size and any camera movement,\n'
     '  "setting": place, time of day and lighting,\n'
     '  "effects": hand-drawn effects such as smoke, fire, impact frames, speed lines, or "none",\n'
-    '  "style": exactly one of "2D hand-drawn anime", "3D CGI", "live action or photorealistic", "other".\n'
+    '  "style": exactly one of "2D hand-drawn anime", "3D CGI", "live action or photorealistic", "other",\n'
+    '  "nsfw": true if the clip shows nudity, sexual content or sexualised framing, otherwise false.\n'
     "Be literal and concrete. Do not invent character names or series titles."
 )
 

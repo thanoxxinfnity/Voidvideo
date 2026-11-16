@@ -56,3 +56,8 @@ Known gaps: **gestures are thin (58 windows)** - Sakugabooru has no gesture tag.
 captions of "character acting" / expression windows for hand-gesture words (waves, points, clenches fist, beckons, shrugs)
 and re-bucket them; add a synthetic hand-gesture set later. Camera moves, slow motion/time freeze and portals/auras have no
 direct tag either: rely on the VLM `camera`/`speed` fields and the Blender virtual-camera set (Section 1, TODO).
+
+## 6. Safety: no adult content in the training data
+- Sakugabooru picks: only rating "Safe" (checked 16 Nov: all ~3000 picked clips are Safe; 3034 Questionable + 1715 Explicit exist in the index and are excluded). Any new pick must be filtered on the index's rating field.
+- `scripts/filter_nsfw.py` runs on every metadata file before training (keyword net over captions/VLM text + the VLM `nsfw` flag, added to the prompt on 16 Nov).
+- Vault uploads are the unreviewed source: the VLM captions are scanned and flagged windows are eyeballed before training.
