@@ -1,0 +1,19 @@
+{
+  "_readme": "Character cards. Write @name in a prompt; the expander replaces it with the full visual description (hair, eyes, clothes, props, face) and adds left/right positions when several cards are used. Add your own cards below. Descriptions are plain visual words, so the model draws a look-alike, not an exact copy.",
+  "kaito": {
+    "look": "a tall young man with spiky white hair and a black blindfold covering his eyes, dark high-collared uniform, relaxed confident smile",
+    "body": "loose, casual posture, one hand in his pocket"
+  },
+  "ryu": {
+    "look": "a muscular man with pink-red spiky hair, sharp black tattoo lines on his face and arms, open dark robe, fierce red eyes",
+    "body": "wide aggressive stance, fists clenched"
+  },
+  "mina": {
+    "look": "a teenage girl with long black hair tied in a ponytail, large brown eyes, white school blouse and red scarf",
+    "body": "light quick steps, arms swinging"
+  },
+  "dragonling": {
+    "look": "a small green dragon with four legs, short wings, round yellow eyes and a spiked tail",
+    "body": "hops forward, wings flapping"
+  }
+}
