@@ -134,7 +134,9 @@ def main():
 
     # Clips are stored with 49 frames; train on the first n_frames consecutively so motion keeps its natural speed.
     dataset = VideoCaptionDataset(
-        metadata_file=str(REPO_ROOT / cfg["dataset"]["metadata_file"]),
+        # WAN_METADATA: a different caption file for the same clips (set by kaggle_entrypoint.py when a
+        # metadata_train.jsonl dataset is attached, e.g. the VLM re-captioned subset).
+        metadata_file=os.environ.get("WAN_METADATA") or str(REPO_ROOT / cfg["dataset"]["metadata_file"]),
         video_root=str(REPO_ROOT / cfg["dataset"]["video_root"]),
         num_frames=max(49, n_frames),
         height=cfg["height"],

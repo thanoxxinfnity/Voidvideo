@@ -99,6 +99,10 @@ def main():
         except Exception:
             print(f"No latent cache dataset {cache_slug} yet -- this run encodes clips itself.")
 
+    for extra in filter(None, (os.environ.get("KAGGLE_EXTRA_DATASETS") or "").split(",")):
+        dataset_sources.append(extra.strip())
+        print(f"Attaching extra dataset {extra.strip()}.")
+
     ref = args.ref or current_git_ref()
     remote_url = current_git_remote_url()
 

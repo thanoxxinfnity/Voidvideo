@@ -37,8 +37,11 @@ if not (src / "clips").is_dir():
         for f in nested.iterdir():
             f.rename(data / "clips" / f.name)
     (data / "metadata.jsonl").write_bytes((src / "metadata.jsonl").read_bytes())
-n_rows = sum(1 for _ in open(data / "metadata.jsonl"))
-print(f"{n_rows} windows in {data}", flush=True)
+# Optional: a small extra dataset holding subset.jsonl (the windows to caption, with their old captions).
+subset = sorted(Path("/kaggle/input").rglob("subset.jsonl"))
+meta_file = subset[0] if subset else data / "metadata.jsonl"
+n_rows = sum(1 for _ in open(meta_file))
+print(f"{n_rows} windows listed in {meta_file}, clips under {data}", flush=True)
 
 import torch  # noqa: E402
 n_gpu = max(1, torch.cuda.device_count())
@@ -47,7 +50,7 @@ for g in range(n_gpu):
     env = dict(os.environ, CUDA_VISIBLE_DEVICES=str(g))
     procs.append(subprocess.Popen(
         [sys.executable, str(REPO / "scripts" / "vlm_caption_clips.py"), "--data", str(data),
-         "--out", str(WORK / f"cap_shard{g}.jsonl"), "--shard", str(g), "--nshards", str(n_gpu)]
+         "--out", str(WORK / f"cap_shard{g}.jsonl"), "--shard", str(g), "--nshards", str(n_gpu), "--meta", str(meta_file)]
         + (["--limit", str(LIMIT)] if LIMIT else []) + ["--stride", str(STRIDE)], env=env))
 codes = [p.wait() for p in procs]
 print("shard exit codes:", codes, flush=True)
@@ -63,7 +66,7 @@ with open(WORK / "captions_raw.jsonl", "w") as raw:
                 raw.write(line)
 ok = bad = non_anime = 0
 with open(WORK / "metadata_vlm.jsonl", "w") as out, open(WORK / "metadata_vlm_anime_only.jsonl", "w") as only:
-    for line in open(data / "metadata.jsonl"):
+    for line in open(meta_file):
         r = json.loads(line)
         n = new.get(r["video"])
         is_anime = True

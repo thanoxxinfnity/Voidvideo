@@ -111,6 +111,7 @@ def compose(v: dict, old_caption: str) -> str:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--data", required=True)
+    ap.add_argument("--meta", default=None, help="jsonl of the windows to caption (default: DATA/metadata.jsonl)")
     ap.add_argument("--out", required=True)
     ap.add_argument("--shard", type=int, default=0)
     ap.add_argument("--nshards", type=int, default=1)
@@ -122,7 +123,9 @@ def main():
     args = ap.parse_args()
 
     data = Path(args.data)
-    rows = [json.loads(line) for line in open(data / "metadata.jsonl") if line.strip()]
+    rows = [json.loads(line) for line in open(args.meta or data / "metadata.jsonl") if line.strip()]
+    # Synthetic motion graphics already have exact captions (every render parameter is known): leave them alone.
+    rows = [r for r in rows if "vfx-motion-graphics" not in r["video"]]
     rows = rows[args.shard::args.nshards][::max(1, args.stride)]
     if args.limit:
         rows = rows[:args.limit]

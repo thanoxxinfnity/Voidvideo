@@ -123,6 +123,10 @@ def main():
         # Wan needs diffusers >= 0.33; these are the versions verified with Wan2.1-1.3B on a Kaggle T4.
         run(["pip", "install", "-q", "-U", "diffusers==0.35.2", "transformers==4.57.3", "ftfy", "sentencepiece"])
         os.environ.setdefault("LATENT_CACHE_DIR", str(WORKING_DIR / "outputs" / "wan_latent_cache"))
+        train_meta = sorted(KAGGLE_INPUT.rglob("metadata_train.jsonl")) if KAGGLE_INPUT.exists() else []
+        if train_meta:
+            os.environ["WAN_METADATA"] = str(train_meta[0])
+            print(f"Using caption/window list {train_meta[0]}")
     # Kaggle's base image ships torchao 0.10.0. A recent peft release probes
     # is_torchao_available() while dispatching LoRA layers -- even though we
     # never asked for torchao-backed quantized LoRA -- and raises ImportError

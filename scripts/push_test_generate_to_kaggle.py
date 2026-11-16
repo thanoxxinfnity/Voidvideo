@@ -54,7 +54,7 @@ def main():
         "is_private": True,
         "enable_gpu": True,
         "enable_internet": True,
-        "dataset_sources": [ckpt_slug],
+        "dataset_sources": [ckpt_slug] + [d.strip() for d in (os.environ.get("KAGGLE_EXTRA_DATASETS") or "").split(",") if d.strip()],
         "competition_sources": [],
         "kernel_sources": [],
         "model_sources": [],
