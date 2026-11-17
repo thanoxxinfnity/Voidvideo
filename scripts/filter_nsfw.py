@@ -16,7 +16,7 @@ import sys
 
 BLOCK = re.compile(
     r"\b(nude|nudity|naked|topless|bare[- ]?breast\w*|breasts?|nipples?|genitals?|sex\w*|erotic\w*|hentai|ecchi|lewd|"
-    r"fetish|lingerie|underwear|panties|panty|pantsu|upskirt|cleavage|bikini|swimsuit|undress\w*|strip\w*|seductive|"
+    r"fetish|lingerie|underwear|panties|panty|pantsu|upskirt|cleavage|bikini|swimsuit|undress\w*|strip(?:per|tease|ping)|seductive|"
     r"provocative|fanservice|fan[- ]service|nsfw|explicit|porn\w*|moan\w*|groping|bath(?:ing)? scene)\b", re.I)
 
 
