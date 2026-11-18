@@ -39,7 +39,9 @@ PROMPT = (
     '  "setting": place, time of day and lighting,\n'
     '  "effects": hand-drawn effects such as smoke, fire, impact frames, speed lines, or "none",\n'
     '  "style": exactly one of "2D hand-drawn anime", "3D CGI", "live action or photorealistic", "other",\n'
-    '  "nsfw": true if the clip shows nudity, sexual content or sexualised framing, otherwise false.\n'
+    '  "nsfw": true if the clip shows nudity, sexual content or sexualised framing, otherwise false,\n'
+    '  "violence": exactly one of "none", "action violence without blood", "blood or injury", "graphic gore or death" '
+    '(blood splatter, wounds, severed limbs, corpses, characters being killed).\n'
     "Be literal and concrete. Do not invent character names or series titles."
 )
 
@@ -93,6 +95,11 @@ def compose(v: dict, old_caption: str) -> str:
     for key in ("action", "setting"):
         if clean(v.get(key)):
             parts.append(clean(v[key]))
+    viol = clean(v.get("violence")).lower()
+    if "gore" in viol or "death" in viol:
+        parts.append("graphic violence: blood, gore and a character being killed or dead")
+    elif "blood" in viol or "injury" in viol:
+        parts.append("blood and injuries are shown")
     eff = clean(v.get("effects"))
     if eff and eff.lower() != "none":
         parts.append(f"effects: {eff}")

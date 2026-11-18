@@ -45,6 +45,22 @@ HF token in `.env`; the user keeps a backup file of both and re-pastes them if a
   later a "studio" app (generate → takes → fix → layers → upscale). Plans: original characters only (copyright), own game engine
   is a separate project of the user.
 
+### Update 18 Nov 2026 (read after the section above)
+- **Training run in progress:** Kaggle kernel `voidvideo-wan-train` (task `wan_t2v_24`, resumes from `voidvideo-lora-checkpoint-wan24-big` step 100,
+  target 370 steps over 2 sessions). 1st launch died (RAM OOM in caption-embedding phase with 2227 captions); fixed in
+  `training/train_wan_lora.py` (unpadded encode, trimmed embeds, disk-cached `caption_embeds_<hash>.pt`).
+- **Data:** train metadata = `voidvideo-train-meta-v5/metadata_train.jsonl` (2147 VLM-captioned real anime windows; the 80 synthetic
+  motion-graphics windows were REMOVED on the user's request: no box/quiz synthetic data in training). NSFW: Sakuga picks are rating "Safe" only,
+  `scripts/filter_nsfw.py` runs on every metadata file; the user wants NO adult/sexual content ever (violence/gore is fine and wanted).
+- **Dark action (blood/death/brutal fights) set:** `scripts/select_dark_action.py` picked 1500 Safe fight clips from violent series
+  (`picked4.json`, extracting into `ds24d_*` in the scratchpad); VLM now returns a `violence` field (none / action / blood or injury / graphic
+  gore or death) and the caption says so. Next week: VLM-caption them, keep windows with blood/gore, train a top-up.
+- **Crowd scenes:** layered pipeline `scripts/crowd_plan.py` + `crowd_compose.py` (chroma-key compositor, tested on CPU) +
+  `kaggle_wan24_crowd_entrypoint.py` (not yet run on GPU; unknown whether Wan makes clean green-screen layers).
+  Character cards: `configs/characters.json` + `scripts/expand_prompt.py` (`@name` -> visual description with left/right roles).
+- **Quota:** weekly 30 GPU h resets Sat 00:00Z (21 Nov). Sessions A+B of the current training use most of this week's quota.
+- **Pending:** TTS is for a later session (needs the user's own voice recordings); 3D is paused; model pack zip (Wan LoRA step-100) was sent, update it after training.
+
 ## Known blocker: this sandbox's network policy
 The Claude Code sandbox this was built in blocks outbound HTTPS to
 `api.vercel.com`, `app.netlify.com`/`api.netlify.com`, and

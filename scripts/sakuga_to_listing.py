@@ -25,7 +25,8 @@ PHRASES = {
 LEAD = {"fighting": "Anime fight scene", "vfx": "Anime effects animation", "locomotion": "Anime character motion",
         "secondary-motion": "Anime secondary motion", "expressions": "Anime character acting close to the camera",
         "creatures": "Anime monster and creature animation", "animals": "Anime animal animation",
-        "crowd": "Anime crowd scene with many characters"}
+        "crowd": "Anime crowd scene with many characters",
+        "dark-action": "Dark violent anime fight scene"}
 
 
 VFX_LEAD = {"vfx-morph": "Anime transformation and morphing effects", "vfx-ice": "Anime ice and freezing effects",
