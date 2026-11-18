@@ -67,13 +67,20 @@ def load_config(path: str, task: str) -> dict:
 
 @torch.no_grad()
 def encode_prompt(tokenizer, text_encoder, prompt: str, device) -> torch.Tensor:
-    """(TEXT_LEN, 4096) UMT5 embeddings, zero-padded past the real token count (as WanPipeline does)."""
-    tok = tokenizer([prompt], padding="max_length", max_length=TEXT_LEN, truncation=True,
+    """(n_tokens, 4096) UMT5 embeddings of the real tokens only (no padding is run through the encoder: ~4x faster and
+    identical for the real tokens). pad_embeds() zero-pads to TEXT_LEN at use, as WanPipeline does."""
+    tok = tokenizer([prompt], padding=False, max_length=TEXT_LEN, truncation=True,
                     add_special_tokens=True, return_attention_mask=True, return_tensors="pt")
-    n = int(tok.attention_mask.gt(0).sum())
     emb = text_encoder(tok.input_ids.to(device), tok.attention_mask.to(device)).last_hidden_state[0]
-    emb = emb[:n]
-    return torch.cat([emb, emb.new_zeros(TEXT_LEN - n, emb.shape[1])]).cpu()
+    return emb.cpu()
+
+
+def pad_embeds(embeds: list) -> torch.Tensor:
+    """List of (n_i, 4096) -> (B, TEXT_LEN, 4096), zero-padded."""
+    out = torch.zeros(len(embeds), TEXT_LEN, embeds[0].shape[1], dtype=embeds[0].dtype)
+    for i, e in enumerate(embeds):
+        out[i, :e.shape[0]] = e
+    return out
 
 
 @torch.no_grad()
@@ -144,12 +151,30 @@ def main():
     )
 
     # ---- Caption embeddings: T5 goes alone on the GPU (transformer is still on CPU), then is freed. ----
-    text_encoder.to(device)
     captions = sorted({row.get("caption", "") for row in dataset.rows} | {""})
     caption_index = {c: i for i, c in enumerate(captions)}
-    caption_embeds = torch.stack([encode_prompt(tokenizer, text_encoder, c, device) for c in captions]).to(weight_dtype)
     empty_caption_idx = caption_index[""]
-    print(f"Precomputed {len(captions)} caption embeddings {tuple(caption_embeds.shape)}.", flush=True)
+    cap_key = hashlib.sha1("\n".join(captions).encode()).hexdigest()[:16]
+    cap_file = f"caption_embeds_{cap_key}.pt"
+    cache_dir = Path(os.environ.get("LATENT_CACHE_DIR", REPO_ROOT / "outputs" / "wan_latent_cache"))
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    seed_for_caps = os.environ.get("LATENT_CACHE_SEED_DIR")
+    cap_dirs = [cache_dir] + ([Path(seed_for_caps)] if seed_for_caps else
+                              (sorted(Path("/kaggle/input").glob("**/voidvideo-latent-cache-wan*")) if Path("/kaggle/input").exists() else []))
+    cap_path = next((d / cap_file for d in cap_dirs if (d / cap_file).exists()), None)
+    if cap_path is not None:
+        caption_embeds = torch.load(cap_path, map_location="cpu")
+        print(f"Loaded {len(caption_embeds)} cached caption embeddings from {cap_path}.", flush=True)
+    else:
+        text_encoder.to(device)
+        caption_embeds, t_cap = [], time.time()
+        for i, c in enumerate(captions):
+            caption_embeds.append(encode_prompt(tokenizer, text_encoder, c, device).to(weight_dtype))
+            if (i + 1) % 200 == 0:
+                print(f"caption embeddings {i + 1}/{len(captions)} ({time.time() - t_cap:.0f}s)", flush=True)
+        torch.save(caption_embeds, cache_dir / cap_file)
+    print(f"Caption embeddings ready: {len(captions)} captions, "
+          f"{sum(e.numel() for e in caption_embeds) * 2 / 1e9:.1f} GB (unpadded).", flush=True)
     del text_encoder
     gc.collect()
     torch.cuda.empty_cache()
@@ -161,7 +186,6 @@ def main():
 
     t_start = time.time()
     budget = float(os.environ.get("PRECOMPUTE_BUDGET_SEC", 7 * 3600))
-    cache_dir = Path(os.environ.get("LATENT_CACHE_DIR", REPO_ROOT / "outputs" / "wan_latent_cache"))
     seed_env = os.environ.get("LATENT_CACHE_SEED_DIR")
     if seed_env:
         seed_dir = Path(seed_env)
@@ -277,7 +301,7 @@ def main():
             with accelerator.accumulate(transformer):
                 latents = torch.stack([lat for lat, _ in batch]).to(device, weight_dtype)  # (B, C, T, H, W)
                 cap_ids = [empty_caption_idx if random.random() < caption_dropout else idx for _, idx in batch]
-                prompt_embeds = caption_embeds[cap_ids].to(device)
+                prompt_embeds = pad_embeds([caption_embeds[i] for i in cap_ids]).to(device)
 
                 noise = torch.randn_like(latents)
                 bsz = latents.shape[0]
