@@ -59,6 +59,11 @@ HF token in `.env`; the user keeps a backup file of both and re-pastes them if a
   `kaggle_wan24_crowd_entrypoint.py` (not yet run on GPU; unknown whether Wan makes clean green-screen layers).
   Character cards: `configs/characters.json` + `scripts/expand_prompt.py` (`@name` -> visual description with left/right roles).
 - **Quota:** weekly 30 GPU h resets Sat 00:00Z (21 Nov). Sessions A+B of the current training use most of this week's quota.
+- **Studio (19 Nov 2026):** `studio/` package = camera paths/parallax/DOF/shake, impact frames + speed lines, 2D relight, procedural Foley,
+  prompt enhancer (Hinglish), memory bank, VACE input builders (keyframes/extend/inpaint/outpaint/control), pipeline + storyboard, FastAPI
+  server with queue (`studio/server.py`), Kaggle entrypoint with Cloudflare tunnel (`scripts/kaggle_studio_entrypoint.py`). Tests:
+  `python -m studio.selftest`, `python -m studio.test_api` (fake backend, no GPU). VACE modes are NOT yet run on a GPU; see `docs/STUDIO_ROADMAP.md`
+  for the honest per-feature status. Training code untouched.
 - **Pending:** TTS is for a later session (needs the user's own voice recordings); 3D is paused; model pack zip (Wan LoRA step-100) was sent, update it after training.
 
 ## Known blocker: this sandbox's network policy
