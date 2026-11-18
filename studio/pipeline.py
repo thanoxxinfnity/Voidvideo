@@ -36,7 +36,7 @@ def finish(frames, opts, work, prompt="", progress=None):
     work.mkdir(parents=True, exist_ok=True)
     tag = uuid.uuid4().hex[:8]
     step = lambda msg: progress and progress(msg)          # noqa: E731
-    if opts.get("retime", True):
+    if opts.get("retime", True) and opts.get("style", "anime") == "anime":
         step("retime")
         raw, rt = _write_tmp(frames, work / f"{tag}_raw.mp4"), work / f"{tag}_rt.mp4"
         subprocess.run([sys.executable, str(ROOT / "scripts" / "anime_retime.py"), str(raw), str(rt), "--adaptive"], check=True,
@@ -109,11 +109,13 @@ def run_job(req, backend, work, bank=None, progress=None, cancelled=lambda: Fals
     """One shot. progress(done, total, message). Returns the final mp4 path."""
     r = build_request(req, bank)
     if r.get("enhance", True):
-        r["prompt"], _ = prompt_enhancer.enhance(r["prompt"])
+        r["prompt"], _ = prompt_enhancer.enhance(r["prompt"], style=r.get("style", "anime"))
     frames = backend.generate(r, lambda s, t: progress and progress(s, t, "generating"), cancelled)
     if cancelled():
         raise Cancelled()
-    out = finish(frames, r.get("finish", {}), work, r["prompt"], lambda m: progress and progress(1, 1, m))
+    opts = dict(r.get("finish", {}))
+    opts.setdefault("style", r.get("style", "anime"))
+    out = finish(frames, opts, work, r["prompt"], lambda m: progress and progress(1, 1, m))
     if bank is not None and r.get("remember_as"):
         bank.add_from_clip(r["remember_as"], frames, kind=r.get("remember_kind", "character"))
     return out
@@ -130,7 +132,7 @@ def run_storyboard(shots, backend, work, bank=None, progress=None, cancelled=lam
             s["mode"], s["_prev"] = "extend", prev
         r = build_request(s, bank)
         if r.get("enhance", True):
-            r["prompt"], _ = prompt_enhancer.enhance(r["prompt"])
+            r["prompt"], _ = prompt_enhancer.enhance(r["prompt"], style=r.get("style", "anime"))
         if "_prev" in s:
             r["_prev"] = s["_prev"]
         frames = backend.generate(r, lambda st, t, i=i: progress and progress(i, len(shots), f"shot {i + 1}/{len(shots)} step {st}/{t}"), cancelled)
@@ -142,4 +144,6 @@ def run_storyboard(shots, backend, work, bank=None, progress=None, cancelled=lam
         if bank is not None and r.get("remember_as"):
             bank.add_from_clip(r["remember_as"], frames, kind=r.get("remember_kind", "character"))
     movie = np.concatenate(parts)
-    return finish(movie, shots[0].get("finish", {}), work, " ".join(s["prompt"] for s in shots), None)
+    opts = dict(shots[0].get("finish", {}))
+    opts.setdefault("style", shots[0].get("style", "anime"))
+    return finish(movie, opts, work, " ".join(s["prompt"] for s in shots), None)

@@ -43,6 +43,14 @@ EFFECTS = [(r"punch|kick|slash|hit|clash", "impact flash, speed lines, debris"),
            (r"water|rain|wave|splash", "splashing water droplets"),
            (r"run|dash|chase", "speed lines, dust trail")]
 STYLE = "Traditional 2D hand-drawn anime"
+STYLES = {  # style name -> prompt tail. "anime" uses our LoRA; the others are meant for lora_scale 0 (the plain Wan base model)
+    "anime": STYLE,
+    "cinematic": "Cinematic live-action footage, natural lighting, shallow depth of field, 35mm film look",
+    "realistic": "Photorealistic video, natural colours, handheld camera feel, sharp details",
+    "3d": "3D animated film, stylised characters, soft global illumination, smooth motion",
+    "cartoon": "Western 2D cartoon animation, bold outlines, flat bright colours, squash and stretch",
+    "painterly": "Painterly animation, visible brush strokes, watercolour textures, soft edges",
+}
 
 
 def _first(rules, text):
@@ -57,7 +65,7 @@ def translate(prompt):
     return " ".join(w for w in (HINGLISH.get(t.lower(), t) for t in toks) if w).replace(" ,", ",").replace(" .", ".")
 
 
-def enhance(prompt, cards=None, vfx=None, camera=None):
+def enhance(prompt, cards=None, vfx=None, camera=None, style="anime"):
     """-> (enhanced prompt, report dict of what was added)."""
     cards = cards if cards is not None else {k.lower(): v for k, v in json.load(open(ep.DEFAULT_CARDS)).items()}
     vfx = vfx if vfx is not None else {k.lower(): v for k, v in json.load(open(ep.VFX_CARDS)).items()}
@@ -68,6 +76,7 @@ def enhance(prompt, cards=None, vfx=None, camera=None):
     if shot:
         added["camera"] = shot
     base = ep.expand(text, cards, camera=shot or "", vfx=vfx).strip()
+    tail = STYLES.get(style, STYLE)
     out = base.replace(f" {ep.STYLE}", "").replace(ep.STYLE, "").rstrip()
     extra = []
     if not re.search(r"night|day|sunset|dusk|light|sun|rain", text, re.I):
@@ -79,8 +88,8 @@ def enhance(prompt, cards=None, vfx=None, camera=None):
         if eff:
             added["effects"] = eff
             extra.append(f"Effects: {eff}.")
-    out = (out if out.endswith(".") else out + ".") + (" " + " ".join(extra) if extra else "") + f" {STYLE}"
-    if re.search(r"fast|fight|punch|slash|run", text, re.I):
+    out = (out if out.endswith(".") else out + ".") + (" " + " ".join(extra) if extra else "") + f" {tail}"
+    if style == "anime" and re.search(r"fast|fight|punch|slash|run", text, re.I):
         out += ", animated on ones"
         added["timing"] = "animated on ones"
     return re.sub(r"\s+", " ", out + ".").strip(), added

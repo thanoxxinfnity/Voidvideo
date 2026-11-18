@@ -109,6 +109,12 @@ class WanBackend:
         if mode == "ref2v" or (mode != "t2v" and req.get("_refs")):
             kw["reference_images"] = req.get("_refs")
 
+        scale = float(req.get("lora_scale", 1.0 if req.get("style", "anime") == "anime" else 0.0))   # 0 = plain Wan base model
+        try:
+            pipe.transformer.set_adapters("default", scale)
+        except Exception as e:
+            print("set_adapters failed:", type(e).__name__, str(e)[:120], flush=True)
+
         def cb(p, i, t, kwargs):
             progress(i + 1, steps)
             if cancelled():

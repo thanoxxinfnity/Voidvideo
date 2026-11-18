@@ -40,3 +40,10 @@ The training code (`training/`, `train_wan_lora.py`) is untouched.
 - **Speed:** a 2 s clip is ~11 min on a T4, so "live" means progress % and a thumbnail when done, not a real-time stream.
 - **LoRA on VACE:** the T2V LoRA shares the base blocks with VACE; whether it improves anime in VACE modes is an experiment.
 - **Order for the first GPU test (after training ends):** 1) run `kaggle_studio_entrypoint.py`, 2) t2v through the API, 3) VACE `extend`, `outpaint`, `inpaint`, 4) reference images, 5) motion transfer.
+
+## "Any kind of video" (Veo / Kling style)
+- **Now (code written, GPU-untested):** every job has `style`: `anime` (our LoRA, anime retime) or `cinematic` / `realistic` / `3d` / `cartoon` / `painterly`.
+  Non-anime styles run the plain Wan2.1-1.3B base (`lora_scale` 0), rewrite the prompt tail, and skip the anime retiming.
+- **Honest limit:** that is Wan2.1-1.3B quality for live-action / 3D (2 s clips, soft detail, weak physics and faces), well below Veo 3 / Kling 2.x.
+- **Next steps, in order:** (1) a model router in the backend: Wan2.2-5B or LTX-Video-2B for general video, our anime LoRA only for `style: anime`;
+  (2) a bigger Wan (14B) on a rented A100 for hero shots; (3) long videos via `extend` + storyboard. Each needs a GPU test and quota.
