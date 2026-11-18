@@ -188,17 +188,17 @@ def main():
     budget = float(os.environ.get("PRECOMPUTE_BUDGET_SEC", 7 * 3600))
     seed_env = os.environ.get("LATENT_CACHE_SEED_DIR")
     if seed_env:
-        seed_dir = Path(seed_env)
-    else:
-        found = sorted(Path("/kaggle/input").glob("**/voidvideo-latent-cache-wan*")) if Path("/kaggle/input").exists() else []
-        seed_dir = found[0] if found else Path("/nonexistent-latent-seed")
+        seed_dirs = [Path(seed_env)]
+    else:           # every attached cache dataset (e.g. voidvideo-latent-cache-wan24 + voidvideo-latent-cache-wan24b)
+        seed_dirs = sorted(Path("/kaggle/input").glob("**/voidvideo-latent-cache-wan*")) if Path("/kaggle/input").exists() else []
+    print(f"Latent cache seed dirs: {[str(d) for d in seed_dirs]}", flush=True)
     cache_dir.mkdir(parents=True, exist_ok=True)
 
     def cache_name(video: str) -> str:
         return hashlib.sha1(f"wan{n_frames}:{video}".encode()).hexdigest()[:16] + ".pt"
 
     def find_cached(video: str):
-        for d in (cache_dir, seed_dir):
+        for d in (cache_dir, *seed_dirs):
             f = d / cache_name(video)
             if f.exists():
                 return f
