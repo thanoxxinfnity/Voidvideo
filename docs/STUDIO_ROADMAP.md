@@ -47,3 +47,5 @@ The training code (`training/`, `train_wan_lora.py`) is untouched.
 - **Honest limit:** that is Wan2.1-1.3B quality for live-action / 3D (2 s clips, soft detail, weak physics and faces), well below Veo 3 / Kling 2.x.
 - **Next steps, in order:** (1) a model router in the backend: Wan2.2-5B or LTX-Video-2B for general video, our anime LoRA only for `style: anime`;
   (2) a bigger Wan (14B) on a rented A100 for hero shots; (3) long videos via `extend` + storyboard. Each needs a GPU test and quota.
+- **Evidence step (written, not yet run):** `scripts/kaggle_general_benchmark_entrypoint.py` runs the same 4 general prompts (space, ocean, fox, chef) through
+  Wan2.2-TI2V-5B, Wan2.1-1.3B base and CogVideoX-5B, logging minutes per clip and peak GPU memory. ~1.5-2 h GPU, after the quota reset. The router picks from its result.
