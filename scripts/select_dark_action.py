@@ -27,21 +27,24 @@ def main():
     ap.add_argument("--exclude", nargs="*", default=[])
     ap.add_argument("--total", type=int, default=1500)
     ap.add_argument("--per-series", type=int, default=90)
+    ap.add_argument("--only-series", default="", help="comma list: use only these series (e.g. \"jujutsu kaisen\")")
+    ap.add_argument("--cat", default="dark-action")
     a = ap.parse_args()
     used = set()
     for f in a.exclude:
         used |= {p["post_id"] for p in json.load(open(f))}
+    series = [x.strip() for x in a.only_series.split(",") if x.strip()] or SERIES
     per, picks = collections.Counter(), []
     for r in sorted(json.load(open(a.index)), key=lambda r: -r[3]):            # most favourited first
         pid, tags, rating, fav, _w, _h, cr = r
         if rating != "Safe" or "fighting" not in tags or pid in used:
             continue
         crs = " ".join(cr).lower()
-        s = next((s for s in SERIES if s in crs), None)
+        s = next((s for s in series if s in crs), None)
         if not s or per[s] >= a.per_series:
             continue
         per[s] += 1
-        picks.append({"post_id": pid, "cat": "dark-action", "tags": tags, "copyright": cr, "fav": fav, "tar": f"{pid // 1000}.tar"})
+        picks.append({"post_id": pid, "cat": a.cat, "tags": tags, "copyright": cr, "fav": fav, "tar": f"{pid // 1000}.tar"})
         if len(picks) >= a.total:
             break
     json.dump(picks, open(a.out, "w"))

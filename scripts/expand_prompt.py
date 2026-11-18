@@ -19,11 +19,28 @@ import sys
 from pathlib import Path
 
 DEFAULT_CARDS = Path(__file__).resolve().parent.parent / "configs" / "characters.json"
+VFX_CARDS = Path(__file__).resolve().parent.parent / "configs" / "vfx_cards.json"
 POSITIONS = {1: ["in the center"], 2: ["on the left", "on the right"], 3: ["on the left", "on the right", "in the center background"]}
 STYLE = "Traditional 2D hand-drawn anime."
 
 
-def expand(prompt: str, cards: dict, camera: str = "Medium shot, static camera.") -> str:
+def expand(prompt: str, cards: dict, camera: str = "Medium shot, static camera.", vfx: dict = None) -> str:
+    """@name -> character card, #name -> effect card (see configs/vfx_cards.json)."""
+    vfx = vfx or {}
+    effects = []
+    for m in re.finditer(r"#(\w+)", prompt):
+        k = m.group(1).lower()
+        if k not in vfx:
+            raise KeyError(f"unknown effect #{k}; known: {', '.join(x for x in vfx if not x.startswith('_'))}")
+        effects.append(vfx[k])
+    prompt = re.sub(r"#(\w+)", lambda m: m.group(1).replace("_", " "), prompt)
+    out = _expand_chars(prompt, cards, camera)
+    if effects:
+        out = out.replace(f" {STYLE}", "") + " Effects: " + "; ".join(effects) + ". " + STYLE
+    return out
+
+
+def _expand_chars(prompt: str, cards: dict, camera: str) -> str:
     names = [m.group(1).lower() for m in re.finditer(r"@(\w+)", prompt)]
     seen = []
     for n in names:
@@ -52,7 +69,8 @@ def main():
     ap.add_argument("--camera", default="Medium shot, static camera.")
     args = ap.parse_args()
     cards = {k.lower(): v for k, v in json.load(open(args.cards)).items()}
-    print(expand(args.prompt, cards, args.camera))
+    vfx = {k.lower(): v for k, v in json.load(open(VFX_CARDS)).items()}
+    print(expand(args.prompt, cards, args.camera, vfx))
 
 
 if __name__ == "__main__":
