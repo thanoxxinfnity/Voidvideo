@@ -40,6 +40,7 @@ PROMPT = (
     '  "effects": hand-drawn effects such as smoke, fire, impact frames, speed lines, or "none",\n'
     '  "style": exactly one of "2D hand-drawn anime", "3D CGI", "live action or photorealistic", "other",\n'
     '  "nsfw": true if the clip shows nudity, sexual content or sexualised framing, otherwise false,\n'
+    '  "text": true if burned-in subtitles, a title card, credits, a logo or a watermark are visible, otherwise false,\n'
     '  "violence": exactly one of "none", "action violence without blood", "blood or injury", "graphic gore or death" '
     '(blood splatter, wounds, severed limbs, corpses, characters being killed).\n'
     "Be literal and concrete. Do not invent character names or series titles."

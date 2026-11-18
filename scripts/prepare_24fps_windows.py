@@ -81,6 +81,9 @@ def main():
     ap.add_argument("--allow-resample", action="store_true",
                     help="with --only-24: still keep non-24 fps clips (resampled to 24 fps) but WITHOUT a timing tag "
                          "(fine for VFX, where exact drawing timing matters less)")
+    ap.add_argument("--stride", type=int, default=0,
+                    help="0 = old behaviour (first + last window of each clip); N > 0 = a window every N frames (e.g. 49 = no overlap, "
+                         "36 = overlapping) for long segments")
     args = ap.parse_args()
 
     listing = json.load(open(args.list))
@@ -105,7 +108,10 @@ def main():
             if n24 < WINDOW:
                 print("skip (short)", src.name, n24)
                 continue
-            starts = [0] + ([n24 - WINDOW] if n24 - WINDOW >= WINDOW - 4 else [])
+            if args.stride > 0:
+                starts = list(range(0, n24 - WINDOW + 1, args.stride))
+            else:
+                starts = [0] + ([n24 - WINDOW] if n24 - WINDOW >= WINDOW - 4 else [])
             caption = (c.get("caption") or f"An anime clip showing {category.replace('-', ' ')}.").strip()
             for k, start in enumerate(starts):
                 name = f"{category}__{base}_w{k}.mp4"

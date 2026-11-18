@@ -31,6 +31,34 @@ def cuts(path, threshold):
     return sorted({float(m.group(1)) for m in re.finditer(r"pts_time:([0-9.]+)", r.stderr)})
 
 
+def letterbox(path, t0, w, h):
+    """Picture area (w, h, x, y) of the shot: black bars are detected on 2 s of it (they differ shot to shot)."""
+    r = subprocess.run(["ffmpeg", "-v", "info", "-ss", f"{t0 + 0.3:.2f}", "-t", "2", "-i", str(path), "-vf", "cropdetect=limit=24:round=2:reset=0",
+                        "-f", "null", "-"], capture_output=True, text=True)
+    m = re.findall(r"crop=(\d+):(\d+):(\d+):(\d+)", r.stderr)
+    if not m:
+        return w, h, 0, 0
+    cw, ch, x, y = map(int, m[-1])
+    return (cw, ch, x, y) if ch >= 0.6 * h and cw >= 0.6 * w else (w, h, 0, 0)
+
+
+def subtract(lo, hi, ranges):
+    """[lo, hi] minus the skip ranges -> list of (a, b)."""
+    out = [(lo, hi)]
+    for r0, r1 in ranges:
+        nxt = []
+        for a, b in out:
+            if r1 <= a or r0 >= b:
+                nxt.append((a, b))
+                continue
+            if r0 > a:
+                nxt.append((a, r0))
+            if r1 < b:
+                nxt.append((r1, b))
+        out = nxt
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("src")
@@ -40,7 +68,10 @@ def main():
     ap.add_argument("--min-seconds", type=float, default=2.1, help="drop shots shorter than this (need >= 49 frames at 24 fps)")
     ap.add_argument("--skip-start", type=float, default=0.0)
     ap.add_argument("--skip-end", type=float, default=0.0)
-    ap.add_argument("--crop", default="", help="ffmpeg crop w:h:x:y to cut a watermark / letterbox away")
+    ap.add_argument("--crop", default="", help="fixed ffmpeg crop w:h:x:y (overrides --auto-letterbox)")
+    ap.add_argument("--auto-letterbox", action="store_true", help="detect and remove black bars per shot")
+    ap.add_argument("--crop-bottom", type=float, default=0.0, help="then cut this fraction off the bottom of the picture (burned-in subtitles)")
+    ap.add_argument("--skip-ranges", default="", help="comma list of start-end seconds to drop, e.g. 404-430,0-6 (credits, disclaimers)")
     ap.add_argument("--caption", default="")
     a = ap.parse_args()
     out = Path(a.out)
@@ -51,16 +82,25 @@ def main():
     for s in srcs:
         dur, fps, w, h = probe(s)
         bounds = [0.0] + [c for c in cuts(s, a.threshold) if 0 < c < dur] + [dur]
-        lo, hi = a.skip_start, dur - a.skip_end
-        for k, (t0, t1) in enumerate(zip(bounds, bounds[1:])):
-            t0, t1 = max(t0, lo), min(t1, hi)
+        skips = [tuple(map(float, x.split("-"))) for x in a.skip_ranges.split(",") if x.strip()]
+        allowed = subtract(a.skip_start, dur - a.skip_end, skips)
+        pieces = []
+        for k, (b0, b1) in enumerate(zip(bounds, bounds[1:])):
+            for j, (r0, r1) in enumerate(allowed):
+                t0, t1 = max(b0, r0), min(b1, r1)
+                if t1 > t0:
+                    pieces.append((f"{k:03d}{'abcdefgh'[j % 8]}", t0, t1))
+        for k, t0, t1 in pieces:
             t0 += 0.08                                      # step past the cut frame itself (fades / flashes)
             t1 -= 0.04
             if t1 - t0 < a.min_seconds:
                 short += 1
                 continue
-            name = f"{a.category}__{re.sub(r'[^A-Za-z0-9]+', '-', s.stem)[:30]}-s{k:03d}"
-            vf = (f"crop={a.crop}," if a.crop else "") + "null"
+            name = f"{a.category}__{re.sub(r'[^A-Za-z0-9]+', '-', s.stem)[:30]}-s{k}"
+            cw, ch, cx, cy = map(int, a.crop.split(":")) if a.crop else (letterbox(s, t0, w, h) if a.auto_letterbox else (w, h, 0, 0))
+            ch = int(ch * (1 - a.crop_bottom)) // 2 * 2
+            cw = cw // 2 * 2
+            vf = f"crop={cw}:{ch}:{cx}:{cy}"
             subprocess.run(["ffmpeg", "-v", "error", "-y", "-ss", f"{t0:.3f}", "-to", f"{t1:.3f}", "-i", str(s), "-vf", vf, "-an",
                             "-c:v", "libx264", "-crf", "12", "-pix_fmt", "yuv420p", str(out / "raw" / f"{name}.mp4")], check=True)
             listing[a.category].append({"publicId": f"fan/{name.split('__', 1)[1]}", "caption": a.caption or "An anime fight scene from a fan animation."})

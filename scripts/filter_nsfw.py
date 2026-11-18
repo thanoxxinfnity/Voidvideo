@@ -28,7 +28,8 @@ def text_of(r):
 
 
 def is_bad(r):
-    if (r.get("vlm") or {}).get("nsfw") in (True, "true", "yes"):
+    v = r.get("vlm") or {}
+    if v.get("nsfw") in (True, "true", "yes") or v.get("text") in (True, "true", "yes"):   # adult content, or burned-in text / logos
         return True
     return bool(BLOCK.search(text_of(r)))
 
