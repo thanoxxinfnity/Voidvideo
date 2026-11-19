@@ -1,0 +1,12 @@
+{
+  "_readme": "Effect cards. Write #name in a prompt; expand_prompt.py adds the description as an 'Effects:' sentence. Words only: the model draws a look-alike of the effect, so describe colours, shape, motion and timing precisely. Add your own cards.",
+  "black_flash": "at the instant of the punch a ring of jagged black-and-red lightning cracks outward from the point of impact, the screen flashes white for one frame then black, debris and dust burst away, the background goes dark",
+  "cursed_aura": "a swirling dark-purple and blue energy aura wraps around the body and the arms, flickering wisps rise upward like smoke, the outline pulses with light",
+  "blue_pull": "a glowing blue sphere with a bright white core hovers in the palm, rings of light spiral inward, rubble and dust are sucked toward it in a spiral, the air distorts around the sphere",
+  "red_blast": "a glowing red sphere charges in the open hand then bursts, a red shockwave ring expands, the ground cracks and everything near it is thrown outward with speed lines",
+  "purple_beam": "a huge purple-white energy beam fires forward, the edges crackle with violet lightning, the ground is carved into a trench, the screen shakes and the light washes out the background",
+  "domain_expansion": "the background warps and melts, the scene fills with endless repeating shapes and a dark starry void, hard black-and-white contrast, the character stands calm at the centre as the space around changes",
+  "slash_wave": "a thin curved white-blue slash arcs through the air leaving a bright trailing line, the target splits with a delay, wind blows debris sideways",
+  "impact_shockwave": "a one-frame white impact flash, concentric shockwave rings, cracked ground, speed lines radiating from the hit, dust cloud rolling outward",
+  "blood_splatter": "dark red blood splatters across the frame in a few sharp hand-drawn shapes on the impact frame, droplets fly in an arc and a stain spreads on the ground"
+}

@@ -1,0 +1,6 @@
+gradio>=5.0
+requests>=2.31
+imageio>=2.34
+imageio-ffmpeg>=0.5
+Pillow>=10.0
+python-dotenv>=1.0
