@@ -27,6 +27,7 @@ def main():
     ap.add_argument("--crop", default="")
     ap.add_argument("--stride", type=int, default=36)
     ap.add_argument("--category", default="teacher")
+    ap.add_argument("--threshold", default="0.5", help="shot-cut sensitivity (VFX flashes need a higher value, e.g. 0.7)")
     a = ap.parse_args()
     mp = json.load(open(a.map))
     out = Path(a.out)
@@ -42,7 +43,7 @@ def main():
         w.mkdir(parents=True)
         shutil.copy(src, w / f"{info['name']}.mp4")
         cmd = [sys.executable, str(HERE / "prepare_fan_video.py"), str(w / f"{info['name']}.mp4"), "--out", str(w / "seg"), "--category", a.category,
-               "--threshold", "0.5", "--min-seconds", "2.06", "--caption", info["caption"]]
+               "--threshold", a.threshold, "--min-seconds", "2.06", "--caption", info["caption"]]
         if a.crop:
             cmd += ["--crop", a.crop]
         subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL)
