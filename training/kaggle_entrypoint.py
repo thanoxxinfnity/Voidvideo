@@ -44,6 +44,10 @@ def run(cmd: list[str], **kwargs) -> None:
     subprocess.run(cmd, check=True, **kwargs)
 
 
+# Extra clip datasets (fan animation, AI "teacher" clips ...) whose clips are merged into data/processed next to the main dataset.
+EXTRA_CLIP_HINTS = ("newclips", "fan-clips", "teacher-clips")
+
+
 def find_dataset_dir() -> Path:
     # Kaggle now mounts attached datasets nested as
     # /kaggle/input/datasets/<owner>/<slug>/ rather than /kaggle/input/<slug>/,
@@ -55,9 +59,45 @@ def find_dataset_dir() -> Path:
             "No metadata.jsonl found anywhere under /kaggle/input. Attach the dataset "
             "pushed by scripts/push_dataset_to_kaggle.py as a data source on this kernel."
         )
+    mains = [m for m in matches if not any(h in str(m) for h in EXTRA_CLIP_HINTS)]
     if len(matches) > 1:
-        print(f"Multiple metadata.jsonl found, using the first: {[str(m) for m in matches]}")
-    return matches[0].parent
+        print(f"Multiple metadata.jsonl found: {[str(m) for m in matches]}; main dataset = {(mains or matches)[0]}")
+    return (mains or matches)[0].parent
+
+
+def merge_extra_clips(processed: Path) -> int:
+    """Add the clips of every extra clip dataset (see EXTRA_CLIP_HINTS) to processed/clips as symlinks, so metadata rows that point at
+    clips/<name>.mp4 work whichever dataset the clip came from. Returns how many clips were added."""
+    extras = [m.parent for m in sorted(KAGGLE_INPUT.rglob("metadata.jsonl"))
+              if any(h in str(m) for h in EXTRA_CLIP_HINTS)] if KAGGLE_INPUT.exists() else []
+    if not extras:
+        return 0
+    if processed.is_symlink():                                   # read-only mount: build a real dir of per-file links
+        main = processed.resolve()
+        merged = processed.parent / "processed_merged"
+        shutil.rmtree(merged, ignore_errors=True)
+        (merged / "clips").mkdir(parents=True)
+        for f in (main / "clips").iterdir():
+            (merged / "clips" / f.name).symlink_to(f)
+        for f in main.glob("*.jsonl"):
+            shutil.copy(f, merged / f.name)
+        processed.unlink()
+        merged.rename(processed)
+    added = 0
+    for d in extras:
+        clips = d / "clips"
+        if not clips.is_dir():                                   # still a zip: extract once under the working dir
+            tmp = WORKING_DIR / "extra_clips" / d.name
+            with zipfile.ZipFile(d / "clips.zip") as zf:
+                zf.extractall(tmp)
+            clips = tmp / "clips" if (tmp / "clips").is_dir() else tmp
+        for f in clips.glob("*.mp4"):
+            dst = processed / "clips" / f.name
+            if not dst.exists():
+                dst.symlink_to(f.resolve())
+                added += 1
+    print(f"Merged {added} clips from extra datasets {[str(d) for d in extras]} into {processed}")
+    return added
 
 
 def link_or_extract_dataset(dataset_dir: Path, processed: Path) -> None:
@@ -140,6 +180,8 @@ def main():
 
     dataset_dir = find_dataset_dir()
     link_or_extract_dataset(dataset_dir, REPO_DIR / "data" / "processed")
+    if task.startswith("wan"):
+        merge_extra_clips(REPO_DIR / "data" / "processed")
 
     num_gpus = int(subprocess.run(
         ["python", "-c", "import torch;print(torch.cuda.device_count())"],
