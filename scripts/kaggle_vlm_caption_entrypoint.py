@@ -27,7 +27,13 @@ meta = sorted(Path("/kaggle/input").rglob("metadata.jsonl"))
 assert meta, "attach the 24 fps clips dataset (metadata.jsonl + clips/ or clips.zip)"
 src = meta[0].parent
 data = src
-if not (src / "clips").is_dir():
+if (src / "clips" / "clips").is_dir():                       # Kaggle extracted a zip that held a clips/ folder to clips/clips/
+    data = WORK / "data"
+    data.mkdir(parents=True, exist_ok=True)
+    if not (data / "clips").exists():
+        (data / "clips").symlink_to(src / "clips" / "clips")
+    (data / "metadata.jsonl").write_bytes((src / "metadata.jsonl").read_bytes())
+elif not (src / "clips").is_dir():
     data = WORK / "data"
     (data / "clips").mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(src / "clips.zip") as z:

@@ -86,6 +86,8 @@ def merge_extra_clips(processed: Path) -> int:
     added = 0
     for d in extras:
         clips = d / "clips"
+        if (clips / "clips").is_dir():                           # Kaggle extracted clips.zip (which held a clips/ folder) to clips/clips/
+            clips = clips / "clips"
         if not clips.is_dir():                                   # still a zip: extract once under the working dir
             tmp = WORKING_DIR / "extra_clips" / d.name
             with zipfile.ZipFile(d / "clips.zip") as zf:
