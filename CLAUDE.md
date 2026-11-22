@@ -64,6 +64,18 @@ HF token in `.env`; the user keeps a backup file of both and re-pastes them if a
   server with queue (`studio/server.py`), Kaggle entrypoint with Cloudflare tunnel (`scripts/kaggle_studio_entrypoint.py`). Tests:
   `python -m studio.selftest`, `python -m studio.test_api` (fake backend, no GPU). VACE modes are NOT yet run on a GPU; see `docs/STUDIO_ROADMAP.md`
   for the honest per-feature status. Training code untouched.
+### Update 22 Nov 2026
+- **Top-up run done (180 steps, 9.5 h):** LoRA now ~380 total steps, in dataset `voidvideo-lora-checkpoint-wan24-big` (lora_weights.pt). Mix = 1001 old windows + fan animation
+  (167 windows, Gojo vs Sukuna fan anim, subtitle/letterbox/credits removed) x2 + AI "teacher" clips (10 prompts + 2 VFX clips from another AI video model, watermark
+  cropped, `voidvideo-teacher-clips-v1`) first windows x5, with PROVISIONAL captions (the VLM kernel was stuck QUEUED). Merged clips come from `voidvideo-newclips-v1`
+  (flat clips.zip; Kaggle extracts a zip that holds a clips/ folder to clips/clips/: keep zips flat). Latent caches: `voidvideo-latent-cache-wan24` + `-wan24b` (both are
+  scanned by the trainer).
+- **Result:** modest gains (ice wave, denser crowd, monster detail, fire sparks, hands/gesture better); cheetah static-camera crossing works; novel designs (three eyes /
+  four arms) still fail; expressions and conversations are weaker than the AI teacher clips. Loss is flat (~0.08-0.13): judge by eye only.
+- **Ready for the next run:** VLM captions of the 233 new windows (`new_clean.jsonl`, 226 rows after dropping burned-in text); the composer now dedupes looped clauses and trusts
+  blood/gore only with evidence in the text; `scripts/filter_nsfw.py` reads VLM values, not JSON keys. Biggest lever: MORE AI-teacher-style clips (the user can generate them) and detailed captions.
+- **Quota note:** `chomu1-ui` (user's own kernel) was RUNNING for many hours; Kaggle weekly GPU quota 30 h (resets Sat 00:00Z).
+- **Studio / compare tools:** `docs/COMPARE_VS_VEO.md` + `scripts/compare_blind.py`; `scripts/kaggle_wan24_novel_entrypoint.py` for unseen prompts; `scripts/kaggle_general_benchmark_entrypoint.py` not yet run.
 - **Pending:** TTS is for a later session (needs the user's own voice recordings); 3D is paused; model pack zip (Wan LoRA step-100) was sent, update it after training.
 
 ## Known blocker: this sandbox's network policy
