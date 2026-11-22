@@ -39,6 +39,10 @@ PROMPTS = [  # (tag, prompt, width, height): what the 1244-window 24 fps LoRA sh
     ("fire", "Medium shot, slow push-in. A swordsman swings a sword wrapped in orange flames, the fire trailing "
              "behind the blade in a bright arc, sparks and embers flying, smoke curling up. Anime special effects, "
              "hand-drawn.", 720, 480),
+    ("expression", 'Close-up shot, static camera. A teenage girl with long black hair faces the camera. Her expression shifts from calm to shock: her eyes widen, her pupils shrink, her mouth drops slightly open, a single tear forms. Traditional 2D hand-drawn anime.', 720, 480),
+    ("punch", 'Medium wide shot, handheld camera with slight shake on impact. On the left a man with spiky pink hair punches, on the right a tall man with white hair blocks with his forearm, dust and debris flying, impact flash and speed lines. Traditional 2D hand-drawn anime.', 720, 480),
+    ("talk", 'Medium shot, static camera. Two students stand facing each other on a school rooftop at sunset: on the left a tall boy with short white hair, on the right a shorter boy with spiky black hair in a dark uniform. The black-haired boy talks and gestures with his hand while the other listens with his arms crossed. Traditional 2D hand-drawn anime.', 720, 480),
+    ("battle", 'Wide high-angle shot, static camera. A huge battle in a ruined city: dozens of warriors clash with a giant monster, swords flashing, dust and smoke rising, blood splatter on the impact frames. Traditional 2D hand-drawn anime.', 720, 480),
 ]
 NEGATIVE = ("Bright tones, overexposed, static, blurred details, worst quality, low quality, JPEG artifacts, "
             "ugly, deformed, extra fingers, poorly drawn hands, poorly drawn faces, fused fingers, three legs")
