@@ -23,23 +23,28 @@ exports.handler = async (event) => {
     return json(400, { error: "Invalid JSON body" });
   }
 
-  const { tag } = body;
+  const { tag, caption } = body;
   if (!ALLOWED_TAGS.includes(tag)) {
     return json(400, { error: `tag must be one of: ${ALLOWED_TAGS.join(", ")}` });
   }
 
   const timestamp = Math.round(Date.now() / 1000);
   const folder = `voidvideo/${tag}`;
+  const context = caption && typeof caption === "string" ? `caption=${escapeContextValue(caption.slice(0, 500))}` : undefined;
 
-  const paramsToSign = { folder, tags: tag, timestamp };
+  const paramsToSign = { folder, tags: tag, timestamp, ...(context ? { context } : {}) };
   const toSign = Object.keys(paramsToSign)
     .sort()
     .map((k) => `${k}=${paramsToSign[k]}`)
     .join("&");
   const signature = crypto.createHash("sha1").update(toSign + apiSecret).digest("hex");
 
-  return json(200, { cloudName, apiKey, timestamp, signature, folder, tags: tag });
+  return json(200, { cloudName, apiKey, timestamp, signature, folder, tags: tag, ...(context ? { context } : {}) });
 };
+
+function escapeContextValue(v) {
+  return v.replace(/\\/g, "\\\\").replace(/\|/g, "\\|").replace(/=/g, "\\=");
+}
 
 function json(statusCode, obj) {
   return { statusCode, headers: { "Content-Type": "application/json" }, body: JSON.stringify(obj) };

@@ -1,0 +1,141 @@
+<!doctype html>
+<meta charset="utf-8">
+<style>html,body{margin:0;background:#000;overflow:hidden}canvas{display:block}</style>
+<canvas id="c2d"></canvas>
+<canvas id="c3d" style="display:none"></canvas>
+<script>
+// Deterministic motion-graphics scenes. render.js calls setup(job) once, then drawFrame(i) for i = 0..n-1.
+// Everything is a pure function of the frame index and the job params, so a job always renders identically.
+const FPS = 24;
+let W, H, job, ctx, three = {};
+function rng(seed) { let s = seed >>> 0; return () => ((s = (s * 1664525 + 1013904223) >>> 0) / 4294967296); }
+const ease = t => 1 - Math.pow(1 - Math.min(1, Math.max(0, t)), 3);
+const clamp01 = t => Math.min(1, Math.max(0, t));
+function hsl(h, s, l, a = 1) { return `hsla(${h % 360},${s}%,${l}%,${a})`; }
+function glowText(txt, x, y, size, color, glow, font = "bold") {
+  ctx.font = `${font} ${size}px Arial Black, Impact, Arial`; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  ctx.shadowColor = glow; ctx.shadowBlur = size * 0.35; ctx.fillStyle = color; ctx.fillText(txt, x, y); ctx.shadowBlur = 0;
+}
+function roundRect(x, y, w, h, r) { ctx.beginPath(); ctx.roundRect(x, y, w, h, r); }
+function bg(h1, h2) { const g = ctx.createLinearGradient(0, 0, W, H); g.addColorStop(0, hsl(h1, 70, 12)); g.addColorStop(1, hsl(h2, 70, 20)); ctx.fillStyle = g; ctx.fillRect(0, 0, W, H); }
+
+const S = {};
+// ---- 1. countdown: numbers pop in with a progress ring and sparks ----
+S.countdown = {
+  setup() {}, draw(i, n) {
+    const p = job.params, t = i / (n - 1), R = rng(p.seed);
+    bg(p.hue, p.hue + 60);
+    const seq = p.numbers, k = Math.min(seq.length - 1, Math.floor(t * seq.length)), local = (t * seq.length) % 1;
+    const sc = 0.6 + 0.6 * ease(local * 2.2) - 0.25 * clamp01((local - 0.75) * 4), a = 1 - clamp01((local - 0.8) * 5);
+    const cx = W / 2, cy = H / 2, r = Math.min(W, H) * 0.3;
+    ctx.lineWidth = r * 0.09; ctx.strokeStyle = hsl(p.hue + 180, 90, 60, 0.25); ctx.beginPath(); ctx.arc(cx, cy, r, 0, 7); ctx.stroke();
+    ctx.strokeStyle = hsl(p.hue + 180, 95, 65); ctx.shadowColor = hsl(p.hue + 180, 100, 60); ctx.shadowBlur = 25;
+    ctx.beginPath(); ctx.arc(cx, cy, r, -Math.PI / 2, -Math.PI / 2 + 6.283 * (1 - local)); ctx.stroke(); ctx.shadowBlur = 0;
+    ctx.globalAlpha = a; glowText(String(seq[k]), cx, cy, r * 1.5 * sc, "#fff", hsl(p.hue + 180, 100, 60)); ctx.globalAlpha = 1;
+    for (let j = 0; j < 40; j++) { const ang = R() * 6.283, sp = 0.3 + R(), d = ((local * 1.2 + R()) % 1) * r * 1.6 * sp + r;
+      ctx.fillStyle = hsl(p.hue + 150 + R() * 60, 100, 70, 0.8 * (1 - local)); ctx.beginPath();
+      ctx.arc(cx + Math.cos(ang) * d, cy + Math.sin(ang) * d, 2 + R() * 3, 0, 7); ctx.fill(); }
+  }
+};
+// ---- 2. quiz: question, four options slide in, correct one lights up, timer drains ----
+S.quiz = {
+  setup() {}, draw(i, n) {
+    const p = job.params, t = i / (n - 1); bg(p.hue, p.hue + 40);
+    const portrait = H > W, qy = H * (portrait ? 0.16 : 0.2);
+    ctx.globalAlpha = ease(t * 6); glowText(p.question, W / 2, qy, Math.min(W, H) * (portrait ? 0.075 : 0.085), "#fff", hsl(p.hue + 180, 100, 60)); ctx.globalAlpha = 1;
+    const cols = portrait ? 1 : 2, rows = portrait ? 4 : 2, bw = W * (portrait ? 0.82 : 0.42), bh = H * (portrait ? 0.12 : 0.17);
+    const x0 = (W - (bw * cols + W * 0.04 * (cols - 1))) / 2, y0 = H * (portrait ? 0.3 : 0.42);
+    p.options.forEach((o, k) => {
+      const cx = k % cols, cy = Math.floor(k / cols), delay = 0.12 + k * 0.08, e = ease((t - delay) * 5);
+      const x = x0 + cx * (bw + W * 0.04) + (1 - e) * (cx ? W : -W) * 0.5, y = y0 + cy * (bh + H * 0.04);
+      const reveal = ease((t - 0.62) * 6), correct = k === p.correct;
+      roundRect(x, y, bw, bh, bh * 0.3);
+      ctx.fillStyle = correct && reveal > 0 ? hsl(135, 80, 35 + 15 * reveal) : hsl(p.hue + 20, 55, correct || reveal === 0 ? 30 : 30 - 12 * reveal);
+      ctx.shadowColor = correct && reveal > 0 ? hsl(135, 100, 55) : "transparent"; ctx.shadowBlur = 30 * reveal; ctx.fill(); ctx.shadowBlur = 0;
+      ctx.lineWidth = 3; ctx.strokeStyle = "rgba(255,255,255,.55)"; ctx.stroke();
+      ctx.fillStyle = "#fff"; ctx.font = `bold ${bh * 0.42}px Arial`; ctx.textAlign = "left"; ctx.textBaseline = "middle";
+      ctx.fillText("ABCD"[k] + "  " + o, x + bh * 0.35, y + bh / 2);
+    });
+    const tw = W * 0.8; ctx.fillStyle = "rgba(255,255,255,.18)"; roundRect((W - tw) / 2, H * 0.93, tw, H * 0.022, 10); ctx.fill();
+    ctx.fillStyle = t < 0.62 ? hsl(50 - 50 * t, 100, 55) : hsl(135, 80, 50); roundRect((W - tw) / 2, H * 0.93, tw * (t < 0.62 ? 1 - t / 0.62 : 1), H * 0.022, 10); ctx.fill();
+  }
+};
+// ---- 3. versus split screen with shockwave and sparks ----
+S.vs = {
+  setup() {}, draw(i, n) {
+    const p = job.params, t = i / (n - 1), R = rng(p.seed), e = ease(t * 3), portrait = H > W;
+    ctx.fillStyle = "#050510"; ctx.fillRect(0, 0, W, H);
+    const panels = p.panels, cut = portrait ? [[0, 0, W, H / 2], [0, H / 2, W, H / 2]] : [[0, 0, W / 2, H], [W / 2, 0, W / 2, H]];
+    const cuts = panels === 4 ? [[0, 0, W / 2, H / 2], [W / 2, 0, W / 2, H / 2], [0, H / 2, W / 2, H / 2], [W / 2, H / 2, W / 2, H / 2]] : cut;
+    cuts.forEach((c, k) => { const dir = k % 2 ? 1 : -1, off = (1 - e) * (portrait && panels === 2 ? H : W) * 0.6 * dir;
+      const g = ctx.createLinearGradient(c[0], c[1], c[0] + c[2], c[1] + c[3]); g.addColorStop(0, hsl(p.hues[k], 80, 25)); g.addColorStop(1, hsl(p.hues[k] + 40, 90, 45));
+      ctx.save(); ctx.beginPath(); ctx.rect(c[0], c[1], c[2], c[3]); ctx.clip();
+      ctx.translate(portrait && panels === 2 ? 0 : off, portrait && panels === 2 ? off : 0); ctx.fillStyle = g; ctx.fillRect(c[0], c[1], c[2], c[3]);
+      glowText(p.labels[k], c[0] + c[2] / 2, c[1] + c[3] / 2, Math.min(c[2], c[3]) * 0.22, "#fff", hsl(p.hues[k], 100, 60)); ctx.restore(); });
+    const vt = clamp01((t - 0.3) * 4), r = Math.min(W, H) * (0.05 + 0.5 * ease((t - 0.35) * 2.5));
+    ctx.strokeStyle = `rgba(255,255,255,${0.7 * (1 - clamp01((t - 0.35) * 1.6))})`; ctx.lineWidth = 8; ctx.beginPath(); ctx.arc(W / 2, H / 2, r, 0, 7); ctx.stroke();
+    ctx.save(); ctx.translate(W / 2, H / 2); ctx.scale(0.4 + 0.6 * ease(vt * 1.5) + 0.12 * Math.sin(t * 30) * (1 - t), 1); ctx.translate(-W / 2, -H / 2);
+    glowText("VS", W / 2, H / 2, Math.min(W, H) * 0.3, "#fff", "#ffcc00"); ctx.restore();
+    for (let j = 0; j < 60; j++) { const a = R() * 6.283, d = ((t * 1.1 + R()) % 1) * Math.min(W, H) * 0.6 * (0.3 + R());
+      ctx.fillStyle = `rgba(255,${200 + R() * 55},${80 + R() * 80},${0.9 * (1 - ((t * 1.1 + R()) % 1))})`; ctx.fillRect(W / 2 + Math.cos(a) * d, H / 2 + Math.sin(a) * d, 4, 4); }
+  }
+};
+// ---- 4. rotating concentric geometric shapes ----
+S.geo = {
+  setup() {}, draw(i, n) {
+    const p = job.params, t = i / (n - 1); bg(p.hue, p.hue + 90); const cx = W / 2, cy = H / 2, m = Math.min(W, H);
+    for (let k = 0; k < p.layers; k++) { const f = k / p.layers, rot = t * 6.283 * p.speed * (k % 2 ? -1 : 1) * (0.5 + f), rad = m * (0.08 + 0.42 * f);
+      ctx.strokeStyle = hsl(p.hue + f * 220, 95, 62); ctx.lineWidth = 3 + 5 * (1 - f); ctx.shadowColor = hsl(p.hue + f * 220, 100, 60); ctx.shadowBlur = 18; ctx.beginPath();
+      for (let s = 0; s <= p.sides; s++) { const a = rot + (s / p.sides) * 6.283; const x = cx + Math.cos(a) * rad, y = cy + Math.sin(a) * rad; s ? ctx.lineTo(x, y) : ctx.moveTo(x, y); } ctx.stroke(); }
+    ctx.shadowBlur = 0;
+  }
+};
+// ---- 5. flowing abstract colour waves ----
+S.waves = {
+  setup() {}, draw(i, n) {
+    const p = job.params, t = i / (n - 1); bg(p.hue, p.hue + 100);
+    for (let k = 0; k < p.bands; k++) { const f = k / p.bands; ctx.beginPath(); ctx.moveTo(0, H);
+      for (let x = 0; x <= W; x += 8) { const y = H * (0.25 + 0.6 * f) + Math.sin(x / W * 6.283 * (1 + f * 2) + t * 6.283 * p.speed + k) * H * 0.07 * (1 + f); ctx.lineTo(x, y); }
+      ctx.lineTo(W, H); ctx.closePath(); ctx.fillStyle = hsl(p.hue + f * 160, 85, 45 + 20 * f, 0.55); ctx.fill(); }
+  }
+};
+// ---- three.js scenes ----
+function initThree() {
+  const c = document.getElementById("c3d"); c.width = W; c.height = H;
+  three.renderer = new THREE.WebGLRenderer({ canvas: c, antialias: true, preserveDrawingBuffer: true }); three.renderer.setSize(W, H, false);
+  three.scene = new THREE.Scene(); three.camera = new THREE.PerspectiveCamera(60, W / H, 0.1, 200);
+}
+function blit3() { three.renderer.render(three.scene, three.camera); ctx.drawImage(document.getElementById("c3d"), 0, 0); }
+// ---- 6. coin rain: golden coins fall, spin and bounce on a floor ----
+S.coins = {
+  setup() {
+    initThree(); const p = job.params, R = rng(p.seed); three.scene.background = new THREE.Color(hsl(p.hue, 60, 6));
+    three.scene.add(new THREE.AmbientLight(0xffffff, 1.1)); const l = new THREE.DirectionalLight(0xfff0c0, 2.6); l.position.set(3, 8, 6); three.scene.add(l); const l2 = new THREE.PointLight(0xffaa44, 2.2, 40); l2.position.set(-4, 2, 5); three.scene.add(l2);
+    const geo = new THREE.CylinderGeometry(0.8, 0.8, 0.14, 32), mat = new THREE.MeshStandardMaterial({ color: 0xffc83d, emissive: 0x4a3000, metalness: 0.85, roughness: 0.3 });
+    three.coins = []; for (let k = 0; k < p.count; k++) { const m = new THREE.Mesh(geo, mat); three.scene.add(m);
+      three.coins.push({ m, x: (R() - 0.5) * 9, z: (R() - 0.5) * 5 - 1, y0: 6 + R() * 14, vy: 0, rx: R() * 6, rz: R() * 6, sx: (R() - 0.5) * 8, sz: (R() - 0.5) * 8, delay: R() * 0.6 }); }
+    const floor = new THREE.Mesh(new THREE.PlaneGeometry(40, 40), new THREE.MeshStandardMaterial({ color: 0x6a4a22, metalness: 0.4, roughness: 0.5 }));
+    floor.rotation.x = -Math.PI / 2; floor.position.y = -3; three.scene.add(floor); three.camera.position.set(0, 0.5, 6.5); three.camera.lookAt(0, -0.5, 0);
+  },
+  draw(i, n) { const t = i / FPS, g = job.params.gravity;
+    three.coins.forEach(c => { const tt = Math.max(0, t - c.delay); let y = c.y0 - 0.5 * g * tt * tt, vy = -g * tt; const floorY = -2.9;
+      if (y < floorY) { const tf = Math.sqrt(2 * (c.y0 - floorY) / g), after = tt - tf, v0 = g * tf * 0.45; y = floorY + Math.max(0, v0 * after - 0.5 * g * after * after); }
+      c.m.position.set(c.x, y, c.z); c.m.rotation.set(c.rx + c.sx * tt, 0, c.rz + c.sz * tt); });
+    blit3(); }
+};
+// ---- 7. endless neon tunnel: rings fly towards the camera ----
+S.tunnel = {
+  setup() {
+    initThree(); const p = job.params; three.scene.background = new THREE.Color(0x000008); three.scene.fog = new THREE.Fog(0x000008, 8, 60); three.rings = [];
+    for (let k = 0; k < 40; k++) { const r = new THREE.Mesh(new THREE.TorusGeometry(p.shape === "square" ? 3.2 : 3, 0.06, 8, p.shape === "square" ? 4 : 64),
+      new THREE.MeshBasicMaterial({ color: new THREE.Color(hsl(p.hue + k * 6, 100, 60)) })); if (p.shape === "square") r.rotation.z = Math.PI / 4; r.position.z = -k * 2; three.scene.add(r); three.rings.push(r); }
+    three.camera.position.set(0, 0, 4);
+  },
+  draw(i, n) { const t = i / FPS, sp = job.params.speed * 6; three.rings.forEach((r, k) => { r.position.z = ((-k * 2 + sp * t) % 80) - 80 * (((-k * 2 + sp * t) % 80) > 4 ? 1 : 0); });
+    three.camera.rotation.z = Math.sin(t * 1.4) * job.params.roll; blit3(); }
+};
+
+async function setup(j) { job = j; W = j.width; H = j.height; const c = document.getElementById("c2d"); c.width = W; c.height = H; ctx = c.getContext("2d"); S[j.scene].setup(); }
+function drawFrame(i, n) { ctx.clearRect(0, 0, W, H); S[job.scene].draw(i, n); }
+window.setup = setup; window.drawFrame = drawFrame;
+</script>
