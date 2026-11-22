@@ -21,9 +21,12 @@ BLOCK = re.compile(
 
 
 def text_of(r):
+    """Caption + the descriptive VLM values (never the JSON keys: the key "nsfw" would match the word list)."""
     parts = [r.get("caption", "")]
     v = r.get("vlm") or {}
-    parts += [json.dumps(v)] if v else []
+    for k in ("subjects", "action", "setting", "camera", "effects"):
+        x = v.get(k)
+        parts.append(" ".join(map(str, x)) if isinstance(x, list) else str(x or ""))
     return " ".join(parts)
 
 
