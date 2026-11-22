@@ -75,10 +75,21 @@ def parse_json(text: str):
         return None
 
 
+def dedupe(text: str) -> str:
+    """The VLM sometimes loops ("X snarls; X snarls; X snarls ..."): keep each ;-separated clause once, in order."""
+    seen, out = set(), []
+    for seg in re.split(r";\s*", text):
+        key = re.sub(r"\W+", " ", seg.lower()).strip()
+        if key and key not in seen:
+            seen.add(key)
+            out.append(seg.strip())
+    return "; ".join(out)
+
+
 def clean(x) -> str:
     if isinstance(x, list):
         x = "; ".join(clean(i) for i in x)
-    return re.sub(r"\s+", " ", str(x or "")).strip().rstrip(".")
+    return dedupe(re.sub(r"\s+", " ", str(x or "")).strip().rstrip("."))
 
 
 def compose(v: dict, old_caption: str) -> str:
@@ -97,6 +108,9 @@ def compose(v: dict, old_caption: str) -> str:
         if clean(v.get(key)):
             parts.append(clean(v[key]))
     viol = clean(v.get("violence")).lower()
+    text_all = " ".join(clean(v.get(k)) for k in ("subjects", "action", "effects"))
+    if not re.search(r"blood|bleed|wound|injur|gash|bruis|gore|corpse|dead|killed|dying|severed|splatter|stab", text_all, re.I):
+        viol = ""          # the label alone is not trusted (red fur / red effects were read as blood): needs evidence in the text
     if "gore" in viol or "death" in viol:
         parts.append("graphic violence: blood, gore and a character being killed or dead")
     elif "blood" in viol or "injury" in viol:
